@@ -1,0 +1,2968 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(nanostringr)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(ggpubr)
+library(ComplexHeatmap)
+library(cluster)
+library(readxl)
+library(MCPcounter)
+```
+
+```{r}
+rcc_dir <- list.dirs("~/Dog/Nanostring/",recursive = F)
+raw_expr <- lapply(rcc_dir, function(x) read_rcc(path = x)$raw)
+sfs <- list()
+sfs2 <- list()
+i = 1
+norm_expr <- lapply(raw_expr, function(x) {
+  
+  #positive control normalization
+  gm <- exp(colMeans(log(x[x$Code.Class == "Positive",4:15]), na.rm = T))
+  am <- mean(gm, na.rm = T)
+  sf <- sapply(gm, function(y) am/y)
+  sfs[[i]] <<- sf
+  x1 <- as.matrix(x[,4:15])
+  x1 <- sapply(1:ncol(x1), function(i) sf[i] * as.numeric(x1[,i]))
+  
+  #House keeping gene normalization
+  gm <- exp(colMeans(log(x[x$Code.Class == "Housekeeping", 4:15]), na.rm = T))
+  am <- mean(gm, na.rm = T)
+  sf <- sapply(gm, function(y) am/y)
+  sfs2[[i]] <<- sf
+  x2 <- sapply(1:ncol(x1),function(i) sf[i]*as.numeric(x1[,i]))
+  rownames(x2) <- x$Name
+  colnames(x2) <- colnames(x)[4:ncol(x)]
+  x2 <- x2[x$Code.Class == "Endogenous",]
+  x2 <- x2[,!is.na(sf) & !is.infinite(sf)]
+  i <<- i+1
+  return(x2)
+})
+```
+
+```{r}
+combined_expr <- Reduce(cbind, norm_expr)
+rownames(combined_expr) <- rownames(norm_expr[[1]])
+samp_names <- sapply(colnames(combined_expr), function(x) {
+splitstr = strsplit(x,split = "_")[[1]]
+return(splitstr[3])
+})
+samp_names <- sapply(samp_names, trimws)
+colnames(combined_expr) <- samp_names
+combined_expr <- combined_expr[,!grepl("0814 RNAlater tumor", samp_names)]
+nanostring_annotations <- read_excel("~/Dog/Nanostring/CS032282 and CS9318963 Nanostring 07-29-2022.xlsx")
+nanostring_annotations <- as.data.frame(nanostring_annotations)
+rownames(nanostring_annotations) <- nanostring_annotations$`Nanostring Sample Name`
+common <- intersect(rownames(nanostring_annotations), colnames(combined_expr))
+CE <- combined_expr[,common]
+NaAn <- nanostring_annotations[common,]
+```
+
+```{r}
+library(readr)
+Canine_RNA_SEQ_TPM_All_data <- read_csv("~/Downloads/Canine_RNA_SEQ_TPM_All_data.csv")
+Canine_RNA_SEQ_TPM_All_data <- as.data.frame(Canine_RNA_SEQ_TPM_All_data)
+rownames(Canine_RNA_SEQ_TPM_All_data) <- Canine_RNA_SEQ_TPM_All_data$gene_id
+Canine_RNA_SEQ_TPM_All_data <- Canine_RNA_SEQ_TPM_All_data[,-1]
+sample_type <- c("Met","Primary")[as.numeric(grepl("(Tumor)|(tumor)", colnames(Canine_RNA_SEQ_TPM_All_data)))+1]
+colnames(Canine_RNA_SEQ_TPM_All_data) <- sapply(colnames(Canine_RNA_SEQ_TPM_All_data), function(x) as.character(as.numeric(strsplit(x,split = '_')[[1]][2])))
+rownames(Canine_RNA_SEQ_TPM_All_data) <- sapply(rownames(Canine_RNA_SEQ_TPM_All_data), function(x) gsub("_3","",x))
+
+DOG2_RNAseq_Sample_list <- read_excel("~/Downloads/DOG2 RNAseq Sample list.xlsx")
+DOG2_RNAseq_Sample_list$`Sample ID`[7] <- "18_0620_Met_Skin"
+DOG2_RNAseq_Sample_list$`Sample ID`[8] <- "20_0621_Met_Unspecified"
+sites_RNASeq <- rep("Primary", ncol(Canine_RNA_SEQ_TPM_All_data))
+sites_RNASeq[sample_type == "Met"] <- sapply(DOG2_RNAseq_Sample_list$`Sample ID`[1:8], function(x) toupper(strsplit(x,split = "_")[[1]][4]))
+#sample_type <- sample_type[-which(colnames(Canine_RNA_SEQ_TPM_All_data) == "1702")]
+#sites_RNASeq <- sites_RNASeq[-which(colnames(Canine_RNA_SEQ_TPM_All_data) == "1702")]
+#Canine_RNA_SEQ_TPM_All_data <- Canine_RNA_SEQ_TPM_All_data[,-which(colnames(Canine_RNA_SEQ_TPM_All_data) == "1702")]
+
+
+NAT_RawCountFile_rsemgenes <- read_delim("~/Dog/NAT_RawCountFile_rsemgenes.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+NAT_RawCountFile_rsemgenes <- as.data.frame(NAT_RawCountFile_rsemgenes)
+rownames(NAT_RawCountFile_rsemgenes) <- NAT_RawCountFile_rsemgenes$gene_id
+NAT_RawCountFile_rsemgenes <- NAT_RawCountFile_rsemgenes[,-1]
+rownames(NAT_RawCountFile_rsemgenes) <- gsub("_3","", rownames(NAT_RawCountFile_rsemgenes))
+NAT_RawCountFile_rsemgenes_tpm <- apply(NAT_RawCountFile_rsemgenes,2,function(x) x*10^6/sum(x,na.rm = T))
+rownames(NAT_RawCountFile_rsemgenes_tpm) <- rownames(NAT_RawCountFile_rsemgenes)
+colnames(NAT_RawCountFile_rsemgenes_tpm) <- colnames(NAT_RawCountFile_rsemgenes)
+
+
+
+#rnaseq_all <- cbind(Canine_RNA_SEQ_TPM_All_data, NAT_RawCountFile_rsemgenes_tpm)
+#sample_type <- c(sample_type, c("normal","Met")[as.numeric(grepl("(Met)|(met)(Mets)", colnames(NAT_RawCountFile_rsemgenes_tpm)))+1])
+#sites_RNASeq <- c(sites_RNASeq, sapply(colnames(NAT_RawCountFile_rsemgenes_tpm), strsplit(x, )))
+```
+
+```{r}
+res <- prcomp(t(apply(log2(CE+1),2,scale)))
+p1 <- ggplot(data = data.frame(pc1 = res$x[,1], pc2 = res$x[,2], sample_type = NaAn$`Sample Type`, batch = NaAn$`CS Number`), aes(x = pc1, y = pc2, color = batch)) + geom_point() + theme_bw()
+p2 <- ggplot(data = data.frame(pc1 = res$x[,1], pc2 = res$x[,2], sample_type = NaAn$`Sample Type`, batch = NaAn$`CS Number`), aes(x = pc1, y = pc2, color = sample_type)) + geom_point() + theme_bw()
+
+fig <- ggarrange(p1,p2, nrow = 1, ncol = 2)
+print(fig)
+
+
+
+res <- prcomp(t(apply(log2(Canine_RNA_SEQ_TPM_All_data+1),2,scale)))
+#p1 <- ggplot(data = data.frame(pc1 = res$x[,1], pc2 = res$x[,2], sample_type = sample_type, batch = batch), aes(x = pc1, y = pc2, color = batch)) + geom_point() + theme_bw()
+p2 <- ggplot(data = data.frame(pc1 = res$x[,1], pc2 = res$x[,2], sample_type = sample_type), aes(x = pc1, y = pc2, color = sample_type)) + geom_point() + theme_bw()
+#fig2 <- ggarrange(p1,p2, nrow = 1, ncol = 2)
+print(p2)
+```
+
+
+
+
+
+
+```{r}
+CIN_signature <- function(expr){
+    genes <- c("CCNB2","PRC1","CDC45L","KIF20A","UBE2C","CDC2","MAD2L1","H2AFZ","TRIP13","ESPL1","TTK","FEN1","MCM7","CNAP1","MELK","TPX2","FOXM1","TOP2A","MCM2","RAD51AP1","RFC4","PCNA","RNASEH2A","TGIF2","CCT5")
+    mat <- as.data.frame(expr)
+    mat <- mat[genes,]
+    mat <- apply(as.matrix(mat),1,scale)
+    scores <- rowMeans(mat, na.rm = T)
+    return(scores)
+}
+
+type1_interferon_signature <- function(expr) {
+  genes <- msigdbr_list$HALLMARK_INTERFERON_ALPHA_RESPONSE
+    mat <- as.data.frame(expr)
+    mat <- mat[genes,]
+    mat <- apply(as.matrix(mat),1,scale)
+    scores <- rowMeans(mat, na.rm = T)
+    return(scores)
+}
+
+cGAS_STING_signature <- function(expr){
+  genes = c("CGAS","STING1","TBK1","IKBKE","IRF3")
+  mat <- as.data.frame(expr)
+  mat <- mat[genes,]
+  mat <- apply(as.matrix(mat),1,scale)
+  scores <- rowMeans(mat, na.rm = T)
+  return(scores)
+}
+
+library(RColorBrewer)
+set.seed(2425)
+canin_exp <- Canine_RNA_SEQ_TPM_All_data
+
+# cellprop_rnaseq_primary <- t(MCPcounter.estimate(expression = log2(canin_exp[,sample_type=="Primary"]+1), featuresType = "HUGO_symbols"))
+# cellprop_rnaseq_primary <- apply(cellprop_rnaseq_primary, 2, scale)
+# rownames(cellprop_rnaseq_primary) <- colnames(canin_exp)[sample_type=="Primary"]
+# 
+# cellprop_rnaseq_met <- t(MCPcounter.estimate(expression = log2(canin_exp[,sample_type=="Met"]+1), featuresType = "HUGO_symbols"))
+# cellprop_rnaseq_met <- apply(cellprop_rnaseq_met, 2, scale)
+# rownames(cellprop_rnaseq_met) <- colnames(canin_exp)[sample_type=="Met"]
+
+cellprop_rnaseq<- t(MCPcounter.estimate(expression = log2(canin_exp+1), featuresType = "HUGO_symbols", probesets = read.table("~/Dog/MCP_counter_markers.csv")))
+cellprop_rnaseq <- apply(cellprop_rnaseq, 2, scale)
+rownames(cellprop_rnaseq) <- colnames(canin_exp)
+
+#k means clustering
+#km.res <- kmeans(cellprop_rnaseq_primary, centers = 3, nstart = 500, iter.max = 500)
+#cls_primary <- km.res$cluster
+
+#km.res <- kmeans(cellprop_rnaseq_met, centers = 3, nstart = 500, iter.max = 500)
+#cls_met <- km.res$cluster
+
+km.res <- kmeans(cellprop_rnaseq, centers = 3, nstart = 500, iter.max = 500)
+cls <- km.res$cluster
+
+#BIC = mclustBIC(cellprop_primary_rnaseq)
+# imm_clus_primary_rnaseq <- rep("ID/Fibrotic", nrow(cellprop_rnaseq_primary))
+# imm_clus_primary_rnaseq[cls_primary == 1] <- "IE fibrotic"
+# imm_clus_primary_rnaseq[cls_primary == 3] <- "IE"
+# 
+# imm_clus_met_rnaseq <- rep("ID/Fibrotic", nrow(cellprop_rnaseq_met))
+# imm_clus_met_rnaseq[cls_met == 1] <- "IE fibrotic"
+# imm_clus_met_rnaseq[cls_met == 2] <- "IE"
+# 
+# cellprop_rnaseq <- rbind(cellprop_rnaseq_primary, cellprop_rnaseq_met)
+# imm_clus <- c(imm_clus_primary_rnaseq, imm_clus_met_rnaseq)
+# names(imm_clus) <- rownames(cellprop_rnaseq)
+# cellprop_rnaseq <- cellprop_rnaseq[colnames(canin_exp),]
+# imm_clus <- imm_clus[colnames(canin_exp)]
+
+imm_clus <- rep("ID", nrow(cellprop_rnaseq))
+imm_clus[cls == 1] <- "IE-ECM"
+imm_clus[cls == 2] <- "IE"
+
+ii1 <- imm_clus
+imm_clus <- factor(imm_clus, levels = c("IE","IE-ECM","ID"))
+
+ha = rowAnnotation(
+    sample = sample_type,
+    preservation = rep("Frozen", length(sample_type)),
+    col = list("sample" = c("Primary" = "yellow", "Met" =  "darkgreen"),
+               "preservation" = c("Frozen" = "#db6d00", "FFPE" = "#924900")
+    )
+)
+
+n <- 45
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+cols <- sample(col_vector, n, replace = F)
+cols <- sample(cols, length(unique(sites_RNASeq)), replace = F)
+names(cols) <- unique(sites_RNASeq)
+cols["Primary"] <- "white"
+ha2 = rowAnnotation(
+    site = sites_RNASeq,
+    col = list("site"=cols)
+)
+Heatmap(cellprop_rnaseq, row_split = imm_clus, cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38","#619CFF","#F8766D")), row_names_gp = gpar(cex = 0.5), left_annotation = ha, right_annotation = ha2)
+
+p1 <- Heatmap(cellprop_rnaseq, row_split = imm_clus, cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38","#619CFF","#F8766D")), row_names_gp = gpar(cex = 0.5), left_annotation = ha)
+
+
+pdf('~/Dog/TME_manuscript1.pdf')
+Heatmap(cellprop_rnaseq, row_split = imm_clus, cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")), row_names_gp = gpar(cex = 0.5), left_annotation = ha)
+dev.off()
+
+names(imm_clus) <- rownames(cellprop_rnaseq)
+names(ii1) <- rownames(cellprop_rnaseq)
+
+#ggplot(data = data.frame(immune_subtype = imm_clus, HER2 = HER2), aes(x=immune_subtype,y=HER2)) + geom_boxplot() + stat_compare_means(comparisons = list(c("IE","IE fibrotic"),c("IE fibrotic","ID"),c("IE","ID")), method = "wilcox")
+
+cell_props_dat <- as.data.frame(cellprop_rnaseq)
+cell_props_dat$imm_clus <- imm_clus
+Heatmap(cellprop_rnaseq, row_split = imm_clus, cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38","#619CFF","#F8766D")), row_names_gp = gpar(cex = 0.5), left_annotation = ha, right_annotation = ha2)
+
+pdf('~/Dog/MCP_marker_genes_expression.pdf',width = 18,height = 9)
+Heatmap(cellprop_rnaseq, row_split = imm_clus, cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38","#619CFF","#F8766D")), row_names_gp = gpar(cex = 0.5), left_annotation = ha, right_annotation = ha2)
+dev.off()
+
+p1 <- ggplot(data = data.frame(subtype = imm_clus, CIN_score = CIN_signature(log2(canin_exp+1))), aes(x = subtype, y=CIN_score)) + geom_boxplot() + theme_bw() + theme(text = element_text(size = 15), axis.text.x = element_text(size = 15)) + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif")
+print(p1)
+
+ggsave(plot = p1, filename = "~/Dog/CIN_subtypes.pdf", width = 7, height = 6)
+
+p2 <- ggplot(data = data.frame(subtype = imm_clus, CGAS_STING_score = cGAS_STING_signature(canin_exp)), aes(x = subtype, y=CGAS_STING_score)) + geom_boxplot() + theme_bw() + theme(text = element_text(size = 15), axis.text.x = element_text(size = 15)) + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif")
+print(p2)
+
+p2 <- ggplot(data = data.frame(subtype = imm_clus, IN_score = type1_interferon_signature(log2(canin_exp+1))), aes(x = subtype,y=IN_score)) + geom_boxplot() +theme_bw() + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif")
+print(p2)
+ggsave(plot = p2, filename = "~/Dog/IN_caines.pdf", width = 4, height = 4)
+```
+
+
+```{r}
+library(ConsensusClusterPlus)
+res = ConsensusClusterPlus(d = t(cellprop_rnaseq), distance = "euclidean", clusterAlg = "km", pItem = 0.8, pFeature = 1, seed = 2425,maxK = 10, reps = 100, plot = "pdf",title = "ConsensusMCPcounterRNASeq")
+```
+
+```{r}
+library(reshape)
+out <- t(log2(canin_exp[intersect(c("PDCD1","CD274","CTLA4","TIGIT","LAG3","HAVCR2"), rownames(canin_exp)),]+1))
+out <- data.frame(apply(out,2,scale), subtype = imm_clus)
+
+dd_out <- melt(out, id.vars = "subtype")
+colnames(dd_out) <- c("subtype","ICI_target","expression")
+dd_out$ICI_target <- as.character(dd_out$ICI_target)
+dd_out$subtype <- factor(dd_out$subtype, levels = c("IE","IE-ECM","ID"))
+dd_out$ICI_target[dd_out$ICI_target == "PDCD1"] = "PD1"
+dd_out$ICI_target[dd_out$ICI_target == "CD274"] = "PDL1"
+#p1 <- ggplot(dd_out, aes(x = subtype, y = log2TPM)) +
+#  facet_wrap(~ICI_target, scales = "free_y") + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + theme_bw() + theme(text = element_text(size = 15)) + xlab("ICI target") + ylab("expression (log2(TPM)")
+
+p1 <- ggboxplot(dd_out, x = "subtype", y="expression", facet.by = "ICI_target") + theme_bw() + theme(text = element_text(size = 15)) + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + xlab("") + ylab("expression (normalized)")
+print(p1)
+
+ggsave(plot = p1, filename = "~/Dog/canine_immune_checkpoints.pdf")
+#out2 <- t(xCellAnalysis(NAT_RawCountFile_rsemgenes_tpm[, grepl("(met)|(Met)|(Mets)", colnames(NAT_RawCountFile_rsemgenes_tpm))]))
+#out <- rbind(out,out2)
+#res = ConsensusClusterPlus(d = t(apply(out,2,scale)), distance = "euclidean", clusterAlg = "km", pItem = 0.8, pFeature = 1, seed = 2425,maxK = 10, reps = 100, plot = NULL)
+
+# ha = rowAnnotation(
+#     sample = sample_type,
+#     col = list("sample" = c("Primary" = "yellow", "Met" =  "darkgreen")
+#     )
+# )
+# Heatmap(apply(out,2,scale), row_split = as.character(imm_clus), cluster_columns = T, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")), row_names_gp = gpar(cex = 0.5), left_annotation = ha)
+
+
+```
+
+
+```{r}
+library(xCell)
+out <- t(xCellAnalysis(canin_exp))
+#out2 <- t(xCellAnalysis(NAT_RawCountFile_rsemgenes_tpm[, grepl("(met)|(Met)|(Mets)", colnames(NAT_RawCountFile_rsemgenes_tpm))]))
+#out <- rbind(out,out2)
+res = ConsensusClusterPlus(d = t(apply(out,2,scale)), distance = "euclidean", clusterAlg = "km", pItem = 0.8, pFeature = 1, seed = 2425,maxK = 10, reps = 100, plot = "pdf",title = "ConsensusXCellRNASeq")
+
+ha = rowAnnotation(
+    sample = sample_type,
+    col = list("sample" = c("Primary" = "yellow", "Met" =  "darkgreen")
+    )
+)
+Heatmap(apply(out,2,scale), row_split = as.character(res[[3]]$consensusClass), cluster_columns = T, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")), row_names_gp = gpar(cex = 0.5), left_annotation = ha)
+
+pdf('~/Dog/TME_manuscript3.pdf', width = "13",height = "11")
+Heatmap(apply(out,2,scale), row_split = imm_clus, cluster_columns = T, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")), row_names_gp = gpar(cex = 0.5), left_annotation = ha)
+dev.off()
+
+```
+
+
+```{r}
+#Kassandra deconv
+Kassandra_canine_deconv <- read_csv("~/Dog/Kassandra_canine_deconv.csv")
+Kassandra_canine_deconv <- data.frame(Kassandra_canine_deconv)
+rownames(Kassandra_canine_deconv) <- Kassandra_canine_deconv$...1
+Kassandra_canine_deconv <- Kassandra_canine_deconv[,-1]
+colnames(Kassandra_canine_deconv) <- sapply(colnames(Kassandra_canine_deconv), function(x) gsub("X","",x))
+Kassandra_canine_deconv <- t(as.matrix(Kassandra_canine_deconv))
+Kassandra_canine_deconv <- Kassandra_canine_deconv[colnames(canin_exp),]
+
+#Kassandra deconv
+#Kassandra_canine_nat_deconv <- read_csv("~/Dog/Kassandra_canine_nat_deconv.csv")
+#Kassandra_canine_nat_deconv <- data.frame(Kassandra_canine_nat_deconv)
+#rownames(Kassandra_canine_nat_deconv) <- Kassandra_canine_nat_deconv$...1
+#Kassandra_canine_nat_deconv <- Kassandra_canine_nat_deconv[,-1]
+#colnames(Kassandra_canine_nat_deconv) <- sapply(colnames(Kassandra_canine_nat_deconv), function(x) gsub("X","",x))
+#Kassandra_canine_nat_deconv <- t(as.matrix(Kassandra_canine_nat_deconv))
+#Kassandra_canine_nat_deconv <- Kassandra_canine_nat_deconv[colnames(NAT_RawCountFile_rsemgenes_tpm),]
+#Kassandra_canine_nat_deconv <- apply(Kassandra_canine_nat_deconv,2,scale)
+#rownames(Kassandra_canine_nat_deconv) <- colnames(NAT_RawCountFile_rsemgenes_tpm)
+
+#KS2 <- Kassandra_canine_nat_deconv[grepl("(met)|(Met)|(Mets)", colnames(NAT_RawCountFile_rsemgenes_tpm)),]
+#Kassandra_canine_deconv <- rbind(Kassandra_canine_deconv, KS2)
+
+res = ConsensusClusterPlus(d = t(apply(Kassandra_canine_deconv,2,scale)), distance = "euclidean", clusterAlg = "km", pItem = 0.8, pFeature = 1, seed = 2425,maxK = 10, reps = 100, plot = "pdf",title = "ConsensusKassandraRNASeq")
+
+Heatmap(apply(Kassandra_canine_deconv,2,scale), row_split = as.character(res[[3]]$consensusClass), cluster_columns = T, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")), row_names_gp = gpar(cex = 0.5), left_annotation = ha)
+
+pdf('~/Dog/TME_manuscript4.pdf', width = 13, height = 11)
+Heatmap(apply(Kassandra_canine_deconv,2,scale), row_split = as.character(res[[3]]$consensusClass), cluster_columns = T, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")), row_names_gp = gpar(cex = 0.5), left_annotation = ha)
+dev.off()
+```
+
+
+
+```{r}
+set.seed(24524)
+library(RColorBrewer)
+cellprop_nano <- t(MCPcounter.estimate(expression = log2(cbind(CE[,NaAn$`Sample Type` %in% c("Primary Tumor")],CE[,NaAn$`Sample Type` %in% c("Met")])+1), featuresType = "HUGO_symbols", probesets = read.table("~/Dog/MCP_counter_markers.csv")))
+
+chkpt_nano <- cbind(CE[,NaAn$`Sample Type` %in% c("Primary Tumor")],CE[,NaAn$`Sample Type` %in% c("Met")])
+chkpt_nano <- t(chkpt_nano[intersect(rownames(chkpt_nano), c("PDCD1","CD274","CTLA4","LAG3","HAVCR2","TIGIT")),])
+
+
+nanostring_annotations <- rbind(NaAn[NaAn$`Sample Type` %in% c("Primary Tumor"),], NaAn[NaAn$`Sample Type` %in% c("Met"),])
+
+sample_preservation = c("Frozen","FFPE")[as.numeric(grepl("FFPE",nanostring_annotations$`Name, detailed`))+1]
+
+#cellprop_nano <- apply(cellprop_nano,2,scale)
+cellprop_nano_ffpe <- apply(cellprop_nano[sample_preservation == "FFPE",],2,scale)
+chkpt_nano_ffpe <- apply(chkpt_nano[sample_preservation == "FFPE",],2,scale)
+km.res <- kmeans(cellprop_nano_ffpe, centers = 3, nstart = 100, iter.max = 500)
+
+imm_clus_nano_ffpe <- rep("ID", nrow(cellprop_nano_ffpe))
+imm_clus_nano_ffpe[km.res$cluster == 2] <- "IE"
+imm_clus_nano_ffpe[km.res$cluster == 1] <- "IE-ECM"
+Heatmap(cellprop_nano_ffpe, row_split = imm_clus_nano_ffpe, cluster_column_slices = F, cluster_columns = F)
+
+cellprop_nano_frozen <- apply(cellprop_nano[sample_preservation == "Frozen",],2,scale)
+chkpt_nano_frozen <- apply(chkpt_nano[sample_preservation == "Frozen",],2,scale)
+
+km.res <- kmeans(cellprop_nano_frozen, centers = 3, nstart = 100, iter.max = 500)
+
+imm_clus_nano_frozen <- rep("ID", nrow(cellprop_nano_frozen))
+imm_clus_nano_frozen[km.res$cluster == 3] <- "IE"
+imm_clus_nano_frozen[km.res$cluster == 2] <- "IE-ECM"
+Heatmap(cellprop_nano_frozen, row_split = imm_clus_nano_frozen, cluster_column_slices = F, cluster_columns = F)
+
+cellprop_nano <- rbind(cellprop_nano_ffpe, cellprop_nano_frozen)
+chkpt_nano <- rbind(chkpt_nano_ffpe, chkpt_nano_frozen)
+nanostring_annotations <- rbind(nanostring_annotations[sample_preservation == "FFPE",],nanostring_annotations[sample_preservation == "Frozen",])
+imm_clus_nano = c(imm_clus_nano_ffpe, imm_clus_nano_frozen)
+sample_preservation <- c(sample_preservation[sample_preservation == "FFPE"],sample_preservation[sample_preservation == "Frozen"])
+
+
+#sstatus = c(rep("Met", nrow(cellprop_mets)), rep("Primary", nrow(cellprop_primary)))
+sstatus = nanostring_annotations$`Sample Type`
+ha = rowAnnotation(
+    sample = sstatus,
+    col = list("sample" = c("Primary Tumor" = "yellow", "Met" =  "green")
+    )
+)
+#ss <- sapply(rownames(cellprop_nano), function(x) toupper(strsplit(x,"_")[[1]][1]))
+#ss[sstatus == "Primary"] <- "Primary Tumor"
+
+ss <- toupper(nanostring_annotations$Site)
+ss_split <- rep("OTHER",length(ss))
+ss_split[ss == "LUNG"] <- "LUNG"
+ss_split[ss == "KIDNEY"] <- "KIDNEY"
+ss_split[ss == "LIVER"] <- "LIVER"
+ss_split[ss %in% c("BONE","RIB","L4","T5","T6","T11/T13","SPINE")] <- "SKELETAL"
+ss_split[ss == "PRIMARY"] <- "PRIMARY"
+n <- 70
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+cols <- sample(col_vector, n, replace = F)
+cols <- sample(cols, length(unique(ss)), replace = F)
+names(cols) <- unique(ss)
+
+
+#km.res <- kmeans(cellprop_nano, centers = 3, nstart = 100, iter.max = 500)
+#imm_clus_nano <- rep("ID", nrow(cellprop_nano))
+#imm_clus_nano[km.res$cluster == 2] <- "IE"
+#imm_clus_nano[km.res$cluster == 3] <- "IE-ECM"
+#imm_clus_nano <- c(imm_clus_prim, imm_clus_met)
+
+ha = rowAnnotation(
+    sample = sstatus,
+    preservation = sample_preservation,
+    col = list("sample" = c("Primary Tumor" = "yellow", "Met" =  "darkgreen"),
+               "preservation" = c("Frozen" = "#db6d00", "FFPE" = "#924900")
+    )
+)
+
+ha2 = rowAnnotation(
+    subtype = imm_clus_nano,
+    col = list("subtype" = c("IE" = "#882255", "IE-ECM" =  "#CC6677", "ID" = "#88CCEE"))
+)
+
+
+
+names(imm_clus_nano) <- as.character(as.numeric(nanostring_annotations$`Subject Code`))
+ii <- imm_clus_nano
+imm_clus_nano <- factor(imm_clus_nano, levels = c("IE","IE-ECM", "ID"))
+#samp <- sapply(rownames(cellprop_nano), function(x) strsplit(x,"_")[[1]][2])
+#samp[sstatus == "Primary"] <- rownames(cellprop_nano)[sstatus == "Primary"]
+#samp_old <- rownames(cellprop_nano)
+rownames(cellprop_nano) <- names(ii)
+Heatmap(cellprop_nano, row_split = ss_split, cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), left_annotation = ha, right_annotation = ha2)
+#pdf("~/Dog/metTME_landscape.pdf", height = 14, width = 8)
+#Heatmap(cellprop_nano, row_split = ss_split, cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(3, #"mm"), left_annotation = ha, right_annotation = ha2)
+#dev.off()
+#rownames(cellprop_nano) <- samp_old
+```
+```{r}
+library(ConsensusClusterPlus)
+res = ConsensusClusterPlus(d = t(cellprop_nano), distance = "euclidean", clusterAlg = "km", pItem = 0.8, pFeature = 1, seed = 2425,maxK = 10, reps = 100, plot = "pdf",title = "ConsensusMCPcounterNano")
+```
+
+
+
+```{r}
+Heatmap(chkpt_nano, row_split = ss_split, cluster_columns = T, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), left_annotation = ha, right_annotation = ha2)
+
+out <- data.frame(chkpt_nano, subtype = imm_clus_nano)
+dd_out <- melt(out, id.vars = "subtype")
+colnames(dd_out) <- c("subtype","ICI_target","scaled_expression")
+dd_out$ICI_target <- as.character(dd_out$ICI_target)
+dd_out$subtype <- factor(dd_out$subtype, levels = c("IE","IE-ECM","ID"))
+dd_out$ICI_target[dd_out$ICI_target == "PDCD1"] = "PD1"
+dd_out$ICI_target[dd_out$ICI_target == "CD274"] = "PDL1"
+#p1 <- ggplot(dd_out, aes(x = subtype, y = log2TPM)) +
+#  facet_wrap(~ICI_target, scales = "free_y") + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + theme_bw() + theme(text = element_text(size = 15)) + xlab("ICI target") + ylab("expression (log2(TPM)")
+
+p1 <- ggboxplot(dd_out, x = "subtype", y="scaled_expression", facet.by = "ICI_target") + theme_bw() + theme(text = element_text(size = 15)) + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + xlab("") + ylab("expression (scaled)")
+print(p1)
+ggsave(plot = p1, filename = "~/Dog/canine_immune_checkpoints_nano.pdf")
+```
+
+```{r}
+library(readxl)
+endo_ihc <- read_excel("~/Dog/IHC validation/Copy of MasckoC_Jessica_manual_BK.xlsx", sheet = "Summary")
+endo_ihc2 <- read_excel("~/Dog/IHC validation/Copy of MasckoC_Jessica_manual_BK.xlsx", sheet = "Sheet1")
+endo_ihc2 <- endo_ihc2[1:17,]
+total_vessels = as.numeric(endo_ihc2$`Total # of blood vessels`)
+total_vessels10 = as.numeric(endo_ihc2$`Vessels <10 µm in 10 fields`)
+names(total_vessels) <- endo_ihc2$CASE
+endo_ihc$subtype = ii1[as.character(endo_ihc$Case)]
+Collagen_I_III <- read_excel("~/Dog/IHC validation/Collagen I III.xlsx", sheet = "Collagen")
+Collagen_I_III <- Collagen_I_III[-c(22,23),]
+Osteoid <- read_excel("~/Dog/IHC validation/Collagen I III.xlsx", sheet = "Osteoid")
+Osteoid <- Osteoid[-c(22,23),]
+Collagen_I_III$subtype = ii1[as.character(Collagen_I_III$Case)]
+Osteoid$subtype = ii1[as.character(Osteoid$Case)]
+```
+
+```{r}
+library(reshape)
+dd_endo <- (data.frame(subtype = endo_ihc$subtype, avg_number_vessels = endo_ihc$`Average # of blood vessels per 0.32mm²`, endo_score = endo_ihc$`Endothelial Score`, endo_group = endo_ihc$`Endothelial Group`, endo_vessels10 = total_vessels[as.character(endo_ihc$Case)]))
+p1 <- ggplot(data = dd_endo, aes(x = endo_group, y = avg_number_vessels)) + geom_boxplot() + theme_minimal() + theme(text = element_text(size = 25)) + xlab("Endothelial cells (RNASeq)") + ylab("Average # of blood vessels per 0.32mm²") +  stat_compare_means()
+ggplot(data = dd_endo, aes(x = subtype, y = avg_number_vessels)) + geom_boxplot() + theme_minimal() + theme(text = element_text(size = 25)) + xlab("subtype (RNASeq)") + ylab("Average # of blood vessels per 0.32mm²")
+p2 <- ggplot(data = dd_endo, aes(x = endo_group, y = endo_vessels10)) + geom_boxplot() + theme_minimal() + theme(text = element_text(size = 25)) + xlab("Endothelial cells (RNASeq)") + ylab("Total #vessels") +  stat_compare_means()
+
+ggplot(data = dd_endo, aes(x = subtype, y = endo_vessels10)) + geom_boxplot() + theme_minimal() + theme(text = element_text(size = 25)) + xlab("subtype (RNASeq)") + ylab("total # vessels")
+
+avg_number_vessels = endo_ihc$`Average # of blood vessels per 0.32mm²`
+names(avg_number_vessels) <- as.character(endo_ihc$Case)
+endo_vessels10 = dd_endo$endo_vessels10
+names(endo_vessels10) <- as.character(endo_ihc$Case)
+
+ihc1 <- subset(endo_ihc2,select = colnames(endo_ihc2)[4:10])
+ihc1$`Vessels <10 µm in 10 fields` <- as.numeric(ihc1$`Vessels <10 µm in 10 fields`)
+ihc1$`Vessels 10- 25 µm in 10 fields` <- as.numeric(ihc1$`Vessels 10- 25 µm in 10 fields`)
+ihc1$`Vessels 25-50 µm in 10 fields` <- as.numeric(ihc1$`Vessels 25-50 µm in 10 fields`)
+ihc1$`Vessels 50-100 µm in 10 fields` <- as.numeric(ihc1$`Vessels 50-100 µm in 10 fields`)
+ihc1$`Vessels >100 µm in 10 fields` <- as.numeric(ihc1$`Vessels >100 µm in 10 fields`)
+ihc1$`Total # of blood vessels` <- as.numeric(ihc1$`Total # of blood vessels`)
+ihc1 <- as.data.frame(ihc1)
+ihc1 <- melt(ihc1)
+colnames(ihc1) <- c("Endo_group","measure","count")
+
+p1 <- ggplot(data = ihc1, aes(x=measure, y=count, fill=Endo_group)) + geom_boxplot() + stat_compare_means(aes(group = Endo_group), label = "p.format") + theme_bw() + theme(text = element_text(size = 15), axis.text.x = element_text(angle = 90))
+print(p1)
+ggsave(filename = "~/Dog/BloodVesselsIHC.pdf",plot = p1, width = 10, height = 6)
+```
+```{r}
+dd_fibro <- (data.frame(subtype = Collagen_I_III$subtype, collagen_area = Collagen_I_III$`Total: Collagen I/III Percent Area`, fibro_group = Collagen_I_III$`Fibroblast Group`, fibroblast_scores = as.numeric(cellprop_rnaseq[Collagen_I_III$Case,"Fibroblasts"])))
+ggplot(data = dd_fibro, aes(x = fibro_group, y = collagen_area)) + geom_boxplot() + theme_minimal() + theme(text = element_text(size = 25)) + xlab("Fibroblasts (RNASeq)") + ylab("Total: Collagen I/III Percent Area") + stat_compare_means()
+
+ggplot(data = dd_fibro, aes(x = subtype, y = collagen_area)) + geom_boxplot() + theme_minimal() + theme(text = element_text(size = 25)) + xlab("subtype (RNASeq)") + ylab("Total: Collagen I/III Percent Area")
+
+cor.test(dd_fibro$collagen_area, dd_fibro$fibroblast_scores)
+collagen_area <- dd_fibro$collagen_area
+names(collagen_area) <- Collagen_I_III$Case
+
+ihc2 <- subset(Osteoid, select = c(colnames(Osteoid)[c(4,13,11,12,55)]))
+ihc2 <- as.data.frame(ihc2)
+ihc2$`% tumor/tissue` <- ihc2$`Tumor Area (mm²)`*100/ihc2$`Total Tissue Area (mm²)`
+rownames(ihc2) <- as.character(as.numeric(Osteoid$Case))
+ihc2$collagen_area <- (collagen_area[rownames(ihc2)]/100)*ihc2$`Total Tissue Area (mm²)`
+ihc2$`% collagenI-III/tissue` = collagen_area[rownames(ihc2)]
+ihc2 <- ihc2[,c(1,5,6,8)]
+ihc2 <- melt(ihc2)
+colnames(ihc2) <- c("Fibroblast_group","measure","value")
+
+p2 <- ggplot(data = ihc2, aes(x=measure, y=value, fill=Fibroblast_group)) + geom_boxplot() + stat_compare_means(aes(group = Fibroblast_group), label = "p.format") + theme_bw() + theme(text = element_text(size = 15), axis.text.x = element_text(angle = 90)) + ylim(c(0,100))
+print(p2)
+ggsave(filename = "~/Dog/FibroIHC.pdf",plot = p2, width = 8, height = 6)
+```
+
+
+
+```{r}
+library(tibble)
+set.seed(317796929)
+a1 <- rbind(cellprop_nano[sstatus == "Met",], cellprop_rnaseq[sample_type == "Met",])
+source_a1 <- c(rep("Nanostring", nrow(cellprop_nano[sstatus == "Met",])), rep("RNASeq",nrow(cellprop_rnaseq[sample_type == "Met",])))
+prep_a1 <- c(sample_preservation[sstatus == "Met"], rep("Frozen",nrow(cellprop_rnaseq[sample_type == "Met",])))
+imm_clus_a1 <- c(ii[sstatus == "Met"], ii1[sample_type == "Met"])
+sites_a1 <- c(ss[sstatus == "Met"], sites_RNASeq[sample_type == "Met"])
+
+
+a2 <- rbind(cellprop_rnaseq[sample_type == "Primary",], cellprop_nano[sstatus == "Primary Tumor",])
+source_a2 <- c(rep("RNASeq", nrow(cellprop_rnaseq[sample_type == "Primary",])), rep("Nanostring",nrow(cellprop_nano[sstatus == "Primary Tumor",])))
+prep_a2 <- c(rep("Frozen",nrow(cellprop_rnaseq[sample_type == "Primary",])), sample_preservation[sstatus == "Primary Tumor"])
+imm_clus_a2 <- c(ii1[sample_type == "Primary"], ii[sstatus == "Primary Tumor"])
+sites_a2 <- rep("Primary", length(imm_clus_a2))
+
+common <- intersect(rownames(a1), rownames(a2))
+case_list <- list()
+for(pt in common){
+    xx <- a1[rownames(a1) == pt,]
+    if(is.null(dim(xx))){
+        xx <- t(xx)
+    }
+    d1 <- data.frame(xx)
+    d1$sample_type = "Metastatic"
+    d1$source = source_a1[rownames(a1) == pt]
+    d1$prep = prep_a1[rownames(a1) == pt]
+    d1$site = sites_a1[rownames(a1) == pt]
+    d1$case = pt
+    d1$immune_subtype = imm_clus_a1[rownames(a1) == pt]
+    
+    xx <- a2[rownames(a2) == pt,]
+    if(is.null(dim(xx))){
+        xx <- t(xx)
+    }
+    d2 <- data.frame(xx)
+    d2$sample_type = "Primary"
+    d2$source = source_a2[rownames(a2) == pt]
+    d2$prep = prep_a2[rownames(a2) == pt]
+    d2$site = sites_a2[rownames(a2) == pt]
+    d2$case = pt
+    d2$immune_subtype = imm_clus_a2[rownames(a2) == pt]
+    
+    case_list[[pt]] <- rbind(d2,d1)
+}
+matched_cases <- Reduce(rbind, case_list)
+
+matched_cases$sample_type <- factor(matched_cases$sample_type, levels = c("Primary", "Metastatic"))
+
+ss1_split <- rep("OTHER",nrow(matched_cases))
+ss1_split[matched_cases$site == "LUNG"] <- "LUNG"
+ss1_split[matched_cases$site == "KIDNEY"] <- "KIDNEY"
+ss1_split[matched_cases$site == "LIVER"] <- "LIVER"
+ss1_split[matched_cases$site %in% c("BONE","RIB","L4","T5","T6","T11/T13","SPINE")] <- "SKELETAL"
+ss1_split[matched_cases$site == "Primary"] <- "PRIMARY"
+pallete <- c("#A6611A", "#D01C8B", "#7B3294", "#E66101", "#CA0020", 
+             "#CA0020", "#D7191C", "#D7191C", "#D7191C", "#7FC97F", "#1B9E77", 
+             "#A6CEE3", "#FBB4AE", "#B3E2CD", "#E41A1C", "#66C2A5", "#8DD3C7", 
+             "#EFF3FF", "#EDF8FB", "#EDF8FB", "#F0F9E8", "#EDF8E9", "#F7F7F7", 
+             "#FEEDDE", "#FEF0D9", "#F1EEF6", "#F6EFF7", "#F1EEF6", "#F2F0F7", 
+             "#FEEBE2", "#FEE5D9", "#FFFFCC", "#FFFFCC", "#FFFFD4", "#FFFFB2", 
+             "#DFC27D", "#F1B6DA", "#C2A5CF", "#FDB863", "#F4A582", "#F4A582", 
+             "#FDAE61", "#FDAE61", "#FDAE61", "#BEAED4", "#D95F02", "#1F78B4", 
+             "#B3CDE3", "#FDCDAC", "#377EB8", "#FC8D62", "#FFFFB3", "#BDD7E7", 
+             "#B2E2E2", "#B3CDE3", "#BAE4BC", "#BAE4B3", "#CCCCCC", "#FDBE85", 
+             "#FDCC8A", "#BDC9E1", "#BDC9E1", "#D7B5D8", "#CBC9E2", "#FBB4B9", 
+             "#FCAE91", "#C2E699", "#A1DAB4", "#FED98E", "#FECC5C", "#80CDC1", 
+             "#B8E186", "#A6DBA0", "#B2ABD2", "#92C5DE", "#BABABA", "#ABD9E9", 
+             "#A6D96A", "#ABDDA4", "#FDC086", "#7570B3", "#B2DF8A", "#CCEBC5", 
+             "#CBD5E8", "#4DAF4A", "#8DA0CB", "#BEBADA", "#6BAED6", "#66C2A4", 
+             "#8C96C6", "#7BCCC4", "#74C476", "#969696", "#FD8D3C", "#FC8D59", 
+             "#74A9CF", "#67A9CF", "#DF65B0", "#9E9AC8", "#F768A1", "#FB6A4A", 
+             "#78C679", "#41B6C4", "#FE9929", "#FD8D3C", "#018571", "#4DAC26", 
+             "#008837", "#5E3C99", "#0571B0", "#404040", "#2C7BB6", "#1A9641", 
+             "#2B83BA", "#FFFF99", "#E7298A", "#33A02C", "#DECBE4", "#F4CAE4", 
+             "#984EA3", "#E78AC3", "#FB8072", "#2171B5", "#238B45", "#88419D", 
+             "#2B8CBE", "#238B45", "#525252", "#D94701", "#D7301F", "#0570B0", 
+             "#02818A", "#CE1256", "#6A51A3", "#AE017E", "#CB181D", "#238443", 
+             "#225EA8", "#CC4C02", "#E31A1C")
+
+ha = columnAnnotation(
+    site = ss1_split,
+    preservation = matched_cases$prep,
+    platform = matched_cases$source,
+    subtype = matched_cases$immune_subtype,
+    col = list("site" = c("OTHER" = "#009E73", 
+                          "PRIMARY" =  "#F0E442",
+                          "LUNG"="#DF65B0", 
+                          "KIDNEY" = "#984EA3",
+                          "SKELETAL" = "#FEE5D9",
+                          "LIVER" = "#FB6A4A"),
+               "preservation" = c("Frozen" = "#db6d00", 
+                                  "FFPE" = "#924900"),
+               "platform" = c("Nanostring" = "#525252",
+                              "RNASeq" = "#F2F0F7"),
+               "subtype" = c("ID" = "#88CCEE",
+                             "IE" = "#882255",
+                             "IE-ECM" = "#CC6677")
+    )
+)
+
+met_mat <- as.matrix(matched_cases[,1:10])
+rownames(met_mat) <- matched_cases$case
+
+Heatmap(t(met_mat), column_split =  matched_cases$sample_type, cluster_column_slices = F, column_gap = unit(5, "mm"),  cluster_rows = F, cluster_columns = F, top_annotation = ha, column_names_gp = grid::gpar(fontsize = 8))
+#a1 <- cellprop_nano[sstatus == "Met",]
+#a2 <- cellprop_nano[sstatus == "Primary Tumor",]
+
+#imm_clus_a1 <- ii[sstatus == "Met"]
+#imm_clus_a2 <- ii[sstatus == "Primary Tumor"]
+#sampIds1 <- sapply(rownames(a1), function(x) as.character(as.numeric(strsplit(x,"_")[[1]][2])))
+sampIds1 <- rownames(a1)
+idx <- sapply(sampIds1, function(x) x %in% rownames(a2))
+a1 = a1[idx,]
+imm_clus_a1 = imm_clus_a1[idx]
+ss1 <- sites_a1[idx]
+
+ha = rowAnnotation(
+  sample = rep("Primary Tumor", nrow(a2[sapply(rownames(a2), function(x) x %in% sampIds1[idx]),])),
+  col = list("Primary Tumor" = "yellow", "Met "= "darkgreen")
+)
+
+pdf("~/Dog/Met_evolve_primary.pdf", width = 5, height = 10)
+Heatmap(a2[sapply(rownames(a2), function(x) x %in% rownames(a1)),], row_split = imm_clus_a2[sapply(rownames(a2), function(x) x %in% rownames(a1))], cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), cluster_rows = F, left_annotation = ha)
+dev.off()
+
+
+
+n <- length(unique(ss1))
+#qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+#col_vector = grDevices::colors()[grep('gr(a|e)y', grDevices::colors(), invert = T)]
+cols <- sample(col_vector, n, replace = F)
+ss1_split <- rep("OTHER",length(ss1))
+ss1_split[ss1 == "LUNG"] <- "LUNG"
+ss1_split[ss1 == "KIDNEY"] <- "KIDNEY"
+ss1_split[ss1 == "LIVER"] <- "LIVER"
+ss1_split[ss1 %in% c("BONE","RIB","L4","T5","T6","T11/T13","SPINE")] <- "SKELETAL"
+ss1_split[ss1 == "PRIMARY"] <- "PRIMARY"
+names(cols) <- unique(ss1)
+
+
+
+#samp <- sapply(rownames(a1), function(x) as.character(as.numeric(strsplit(x,"_")[[1]][2])))
+#rownames(a1) <- samp
+#names(imm_clus_a1) <- rownames(a1)
+ha = rowAnnotation(
+    met_subtype = imm_clus_a1[imm_clus_a2[names(imm_clus_a1)] == "IE-ECM"],
+    col = list("met_subtype" = c("IE" = "#882255", "IE-ECM" =  "#CC6677", "ID" = "#88CCEE")
+          )
+)
+
+ha2 = rowAnnotation(
+  sample = rep("Met", length(imm_clus_a1[imm_clus_a2[names(imm_clus_a1)] == "IE-ECM"])),
+  col = list("Primary Tumor"="yellow","Met"="darkgreen")
+)
+
+pdf("~/Dog/Met_evolve_IE-ECM.pdf", width = 5, height = 10)
+Heatmap(a1[imm_clus_a2[names(imm_clus_a1)] == "IE-ECM",], row_split = ss1_split[imm_clus_a2[names(imm_clus_a1)] == "IE-ECM"], cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(3, "mm"), right_annotation = ha,left_annotation = ha2)
+dev.off()
+
+ha = rowAnnotation(
+    met_subtype = imm_clus_a1[imm_clus_a2[names(imm_clus_a1)] == "ID"],
+    col = list("met_subtype" = c("IE" = "#882255", "IE-ECM" =  "#CC6677", "ID" = "#88CCEE")
+          )
+)
+ha2 = rowAnnotation(
+  sample = rep("Met", length(imm_clus_a1[imm_clus_a2[names(imm_clus_a1)] == "ID"])),
+  col = list("Primary Tumor"="yellow","Met"="darkgreen")
+)
+pdf("~/Dog/Met_evolve_ID.pdf", width = 5, height = 10)
+Heatmap(a1[imm_clus_a2[names(imm_clus_a1)] == "ID",], row_split = ss1_split[imm_clus_a2[names(imm_clus_a1)] == "ID"], cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(3, "mm"), right_annotation = ha, left_annotation = ha2)
+dev.off()
+
+
+table((imm_clus_a2[names(imm_clus_a1)]), (imm_clus_a1))
+chisq.test(table((imm_clus_a2[names(imm_clus_a1)]), (imm_clus_a1)))
+cc2 <- as.matrix(table(factor(imm_clus_a2[names(imm_clus_a1)], levels = c("IE","IE-ECM","ID")), factor(imm_clus_a1, levels = c("IE","IE-ECM","ID"))))
+names(attr(cc2, "dimnames")) <- c("primary","metastatic")
+cfm3 <- as_tibble(cc2)
+positions <- c("IE","IE-ECM","ID")
+p12 <- ggplot(cfm3,aes(y=primary, x= metastatic, fill = n)) + geom_tile() + geom_text(aes(label=n)) + scale_fill_gradient(low = "#eff3ff", high = "#2171b5") +  labs(y = "primary",x = "metastatic", fill = "Count") + scale_x_discrete(limits = positions) + scale_y_discrete(limits = c("IE","IE-ECM","ID")) + theme_minimal() + theme(text = element_text(size = 15), axis.text.y = element_text(angle = 90))
+
+print(p12)
+ggsave(filename = "~/Dog/Contingency_table_met_evolve.pdf",plot = p12, width = 4,height = 4)
+
+```
+
+```{r}
+library(tibble)
+set.seed(317796929)
+a1 <- rbind(cellprop_nano[sstatus == "Met",], cellprop_rnaseq[sample_type == "Met",])
+source_a1 <- c(rep("Nanostring", nrow(cellprop_nano[sstatus == "Met",])), rep("RNASeq",nrow(cellprop_rnaseq[sample_type == "Met",])))
+prep_a1 <- c(sample_preservation[sstatus == "Met"], rep("Frozen",nrow(cellprop_rnaseq[sample_type == "Met",])))
+imm_clus_a1 <- c(ii[sstatus == "Met"], ii1[sample_type == "Met"])
+sites_a1 <- c(ss[sstatus == "Met"], sites_RNASeq[sample_type == "Met"])
+
+
+a2 <- rbind(cellprop_rnaseq[sample_type == "Primary",], cellprop_nano[sstatus == "Primary Tumor",])
+source_a2 <- c(rep("RNASeq", nrow(cellprop_rnaseq[sample_type == "Primary",])), rep("Nanostring",nrow(cellprop_nano[sstatus == "Primary Tumor",])))
+prep_a2 <- c(rep("Frozen",nrow(cellprop_rnaseq[sample_type == "Primary",])), sample_preservation[sstatus == "Primary Tumor"])
+imm_clus_a2 <- c(ii1[sample_type == "Primary"], ii[sstatus == "Primary Tumor"])
+sites_a2 <- rep("Primary", length(imm_clus_a2))
+
+common <- intersect(rownames(a1), rownames(a2))
+case_list <- list()
+for(pt in common){
+    xx <- a1[rownames(a1) == pt,]
+    if(is.null(dim(xx))){
+        xx <- t(xx)
+    }
+    d1 <- data.frame(xx)
+    d1$sample_type = "Metastatic"
+    d1$source = source_a1[rownames(a1) == pt]
+    d1$prep = prep_a1[rownames(a1) == pt]
+    d1$site = sites_a1[rownames(a1) == pt]
+    d1$case = pt
+    d1$immune_subtype = imm_clus_a1[rownames(a1) == pt]
+    
+    xx <- a2[rownames(a2) == pt,]
+    if(is.null(dim(xx))){
+        xx <- t(xx)
+    }
+    d2 <- data.frame(xx)
+    d2$sample_type = "Primary"
+    d2$source = source_a2[rownames(a2) == pt]
+    d2$prep = prep_a2[rownames(a2) == pt]
+    d2$site = sites_a2[rownames(a2) == pt]
+    d2$case = pt
+    d2$immune_subtype = imm_clus_a2[rownames(a2) == pt]
+    
+    case_list[[pt]] <- rbind(d2,d1)
+}
+matched_cases <- Reduce(rbind, case_list)
+
+matched_cases$sample_type <- factor(matched_cases$sample_type, levels = c("Primary", "Metastatic"))
+
+ss1_split <- rep("OTHER",nrow(matched_cases))
+ss1_split[matched_cases$site == "LUNG"] <- "LUNG"
+ss1_split[matched_cases$site == "KIDNEY"] <- "KIDNEY"
+ss1_split[matched_cases$site == "LIVER"] <- "LIVER"
+ss1_split[matched_cases$site %in% c("BONE","RIB","L4","T5","T6","T11/T13","SPINE")] <- "SKELETAL"
+ss1_split[matched_cases$site == "Primary"] <- "PRIMARY"
+matched_cases$compressed_site = ss1_split
+pallete <- c("#A6611A", "#D01C8B", "#7B3294", "#E66101", "#CA0020", 
+             "#CA0020", "#D7191C", "#D7191C", "#D7191C", "#7FC97F", "#1B9E77", 
+             "#A6CEE3", "#FBB4AE", "#B3E2CD", "#E41A1C", "#66C2A5", "#8DD3C7", 
+             "#EFF3FF", "#EDF8FB", "#EDF8FB", "#F0F9E8", "#EDF8E9", "#F7F7F7", 
+             "#FEEDDE", "#FEF0D9", "#F1EEF6", "#F6EFF7", "#F1EEF6", "#F2F0F7", 
+             "#FEEBE2", "#FEE5D9", "#FFFFCC", "#FFFFCC", "#FFFFD4", "#FFFFB2", 
+             "#DFC27D", "#F1B6DA", "#C2A5CF", "#FDB863", "#F4A582", "#F4A582", 
+             "#FDAE61", "#FDAE61", "#FDAE61", "#BEAED4", "#D95F02", "#1F78B4", 
+             "#B3CDE3", "#FDCDAC", "#377EB8", "#FC8D62", "#FFFFB3", "#BDD7E7", 
+             "#B2E2E2", "#B3CDE3", "#BAE4BC", "#BAE4B3", "#CCCCCC", "#FDBE85", 
+             "#FDCC8A", "#BDC9E1", "#BDC9E1", "#D7B5D8", "#CBC9E2", "#FBB4B9", 
+             "#FCAE91", "#C2E699", "#A1DAB4", "#FED98E", "#FECC5C", "#80CDC1", 
+             "#B8E186", "#A6DBA0", "#B2ABD2", "#92C5DE", "#BABABA", "#ABD9E9", 
+             "#A6D96A", "#ABDDA4", "#FDC086", "#7570B3", "#B2DF8A", "#CCEBC5", 
+             "#CBD5E8", "#4DAF4A", "#8DA0CB", "#BEBADA", "#6BAED6", "#66C2A4", 
+             "#8C96C6", "#7BCCC4", "#74C476", "#969696", "#FD8D3C", "#FC8D59", 
+             "#74A9CF", "#67A9CF", "#DF65B0", "#9E9AC8", "#F768A1", "#FB6A4A", 
+             "#78C679", "#41B6C4", "#FE9929", "#FD8D3C", "#018571", "#4DAC26", 
+             "#008837", "#5E3C99", "#0571B0", "#404040", "#2C7BB6", "#1A9641", 
+             "#2B83BA", "#FFFF99", "#E7298A", "#33A02C", "#DECBE4", "#F4CAE4", 
+             "#984EA3", "#E78AC3", "#FB8072", "#2171B5", "#238B45", "#88419D", 
+             "#2B8CBE", "#238B45", "#525252", "#D94701", "#D7301F", "#0570B0", 
+             "#02818A", "#CE1256", "#6A51A3", "#AE017E", "#CB181D", "#238443", 
+             "#225EA8", "#CC4C02", "#E31A1C")
+
+ha = columnAnnotation(
+    site = ss1_split,
+    preservation = matched_cases$prep,
+    platform = matched_cases$source,
+    subtype = matched_cases$immune_subtype,
+    col = list("site" = c("OTHER" = "#009E73", 
+                          "PRIMARY" =  "#F0E442",
+                          "LUNG"="#DF65B0", 
+                          "KIDNEY" = "#984EA3",
+                          "SKELETAL" = "#FEE5D9",
+                          "LIVER" = "#FB6A4A"),
+               "preservation" = c("Frozen" = "#db6d00", 
+                                  "FFPE" = "#924900"),
+               "platform" = c("Nanostring" = "#525252",
+                              "RNASeq" = "#F2F0F7"),
+               "subtype" = c("ID" = "#88CCEE",
+                             "IE" = "#882255",
+                             "IE-ECM" = "#CC6677")
+    )
+)
+
+met_mat <- as.matrix(matched_cases[,1:10])
+rownames(met_mat) <- matched_cases$case
+
+Heatmap(t(met_mat), column_split =  matched_cases$sample_type, cluster_column_slices = F, column_gap = unit(5, "mm"),  cluster_rows = F, cluster_columns = F, top_annotation = ha, column_names_gp = grid::gpar(fontsize = 8))
+
+pdf("~/Dog/Met_evolve_updated.pdf", width = 20, height = 5)
+Heatmap(t(met_mat), column_split =  matched_cases$sample_type, cluster_column_slices = F, column_gap = unit(5, "mm"),  cluster_rows = F, cluster_columns = F, top_annotation = ha, column_names_gp = grid::gpar(fontsize = 8))
+dev.off()
+```
+
+```{r}
+#Scripts to read in the canine OS clinical metadata
+
+#clinical metadata for all cases that received Rapamycin (mTOR inhibitor) in addition to standard of care therapy
+Slides2Outcomes_Rapa_all <- read_csv("~/Dog/Slides2Outcomes_Rapa_all_new.csv")
+
+#clinical metadata for all cases that received standard of care therapy
+Slides2Outcomes_SOC_all <- read_csv("~/Dog/Slides2Outcomes_SOC_all_new.csv")
+
+dat1 <- subset(Slides2Outcomes_Rapa_all,select = c("slide","Patient ID","Tumor Location","Site","age","weight","breed","gender","PH","ALP","Group","DFI","DFI_censor","Survival (days from sx)","Surv_censor"))
+dat1$treatment = rep("Rapamycin", nrow(dat1))
+
+dat2 <- subset(Slides2Outcomes_SOC_all,select = c("slide","Patient ID","Tumor Location","Site","age","weight","breed","gender","PH","ALP","Group","DFI","DFI_censor","Survival (days from sx)","Surv_censor"))
+dat2$treatment = rep("SOC", nrow(dat2))
+
+clindat_all <- rbind(dat1,dat2)
+clindat_all <- as.data.frame(clindat_all)
+clindat_all <- clindat_all[!duplicated(clindat_all$slide),]
+rownames(clindat_all) <- substr(clindat_all$slide,1,19)
+clindat_all <- clindat_all[,-1]
+colnames(clindat_all)[c(11,12,13,14)] <- c("DFS_time","DFS_status","OS_time","OS_status")
+clindat_all$ALP[clindat_all$ALP == "elevated"] <- "Elevated"
+clindat_all$gender[clindat_all$`Patient ID` == "307"] <- "Spayed Female"
+clindat_all$gender[grepl("Castrated",clindat_all$gender)] <- "Castrated Male"
+clindat_all$gender[grepl("Spayed",clindat_all$gender)] <- "Spayed Female"
+clindat_all$gender[grepl("Male Phenotype",clindat_all$gender)] <- "Intact Male"
+clindat_all$gender[grepl("Female Phenotype",clindat_all$gender)] <- "Intact Female"
+clindat_all <- clindat_all[!duplicated(clindat_all$`Patient ID`),]
+cc1 <- clindat_all
+rownames(cc1) <- as.character(clindat_all$`Patient ID`)
+common <- intersect(names(imm_clus)[sample_type == "Primary"], rownames(cc1))
+cc1 <- cc1[common,]
+cc1$primary_immune_subtype <- as.character(imm_clus[sample_type == "Primary"][common])
+cc1 <- cc1[cc1$treatment == "Rapamycin",]
+library(survival)
+library(survminer)
+#cc1$integrated = cc1$group
+#cc1$integrated[cc1$group == "{cluster 1, 2}"] = cc1$immune_subtype[cc1$group == "{cluster 1, 2}"]
+ccc1 <-cc1
+#ccc1 <- ccc1[names(met_subtype_lung),]
+#ccc1$met_subtype_lung <- met_subtype_lung
+surv <- survfit(Surv(OS_time, OS_status) ~ primary_immune_subtype, data = ccc1)
+diff <- survdiff(Surv(OS_time, OS_status) ~ primary_immune_subtype, data = ccc1)
+
+p1 <- ggsurvplot(surv, data = ccc1,
+                  legend.title = "",
+                 legend = "right",
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                 palette = c("#88CCEE","#882255","#CC6677"),
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days from sx)")
+print(p1)
+ggsave(filename = "~/Dog/canine_OS_survfigure.pdf", plot=p1$plot, width = 9, height = 6)
+
+surv <- survfit(Surv(DFS_time, DFS_status) ~ primary_immune_subtype, data = ccc1)
+diff <- survdiff(Surv(DFS_time, DFS_status) ~ primary_immune_subtype, data = ccc1)
+
+p1 <- ggsurvplot(surv, data = ccc1,
+                  legend.title = "",
+                 legend = "right",
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                 palette = c("#88CCEE","#882255","#CC6677"),
+                  ggtheme = theme(text = element_text(size = 15)) + theme_bw() # Change ggplot2 theme
+) + xlab("Time (days from sx)")
+print(p1)
+ggsave(filename = "~/Dog/canine_DFS_survfigure.pdf", plot=p1$plot, width = 9, height = 6)
+```
+
+```{r}
+cc1 <- clindat_all
+#cc1 <- cc1[!duplicated(cc1$`Patient ID`),]
+rownames(cc1) <- as.character(clindat_all$`Patient ID`)
+common <- intersect(names(imm_clus)[sample_type == "Primary"], rownames(cc1))
+cc1 <- cc1[common,]
+cc1$primary_immune_subtype <- as.character(imm_clus[sample_type == "Primary"][common])
+cc1 <- cc1[cc1$treatment == "SOC",]
+library(survival)
+library(survminer)
+#cc1$integrated = cc1$group
+#cc1$integrated[cc1$group == "{cluster 1, 2}"] = cc1$immune_subtype[cc1$group == "{cluster 1, 2}"]
+ccc1 <-cc1
+#ccc1 <- ccc1[names(met_subtype_lung),]
+#ccc1$met_subtype_lung <- met_subtype_lung
+surv <- survfit(Surv(OS_time, OS_status) ~ primary_immune_subtype, data = ccc1)
+diff <- survdiff(Surv(OS_time, OS_status) ~ primary_immune_subtype, data = ccc1)
+
+p1 <- ggsurvplot(surv, data = ccc1,
+                  legend.title = "",
+                 legend = "right",
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                 palette = c("#88CCEE","#882255","#CC6677"),
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days from sx)")
+print(p1)
+ggsave(filename = "~/Dog/canine_OS_survfigure.pdf", plot=p1$plot, width = 9, height = 6)
+
+surv <- survfit(Surv(DFS_time, DFS_status) ~ primary_immune_subtype, data = ccc1)
+diff <- survdiff(Surv(DFS_time, DFS_status) ~ primary_immune_subtype, data = ccc1)
+
+p1 <- ggsurvplot(surv, data = ccc1,
+                  legend.title = "",
+                 legend = "right",
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                 palette = c("#88CCEE","#882255","#CC6677"),
+                  ggtheme = theme(text = element_text(size = 15)) + theme_bw() # Change ggplot2 theme
+) + xlab("Time (days from sx)")
+print(p1)
+ggsave(filename = "~/Dog/canine_DFS_survfigure.pdf", plot=p1$plot, width = 9, height = 6)
+```
+
+```{r}
+cc1 <- clindat_all
+#cc1 <- cc1[!duplicated(cc1$`Patient ID`),]
+rownames(cc1) <- as.character(clindat_all$`Patient ID`)
+common <- intersect(names(imm_clus)[sample_type == "Primary"], rownames(cc1))
+cc1 <- cc1[common,]
+cc1$primary_immune_subtype <- as.character(imm_clus[sample_type == "Primary"][common])
+#cc1 <- cc1[cc1$treatment == "Rapamycin",]
+library(survival)
+library(survminer)
+#cc1$integrated = cc1$group
+#cc1$integrated[cc1$group == "{cluster 1, 2}"] = cc1$immune_subtype[cc1$group == "{cluster 1, 2}"]
+ccc1 <-cc1
+#ccc1 <- ccc1[names(met_subtype_lung),]
+#ccc1$met_subtype_lung <- met_subtype_lung
+surv <- survfit(Surv(OS_time, OS_status) ~ primary_immune_subtype, data = ccc1)
+diff <- survdiff(Surv(OS_time, OS_status) ~ primary_immune_subtype, data = ccc1)
+
+p1 <- ggsurvplot(surv, data = ccc1,
+                  legend.title = "",
+                 legend = "right",
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                 palette = c("#88CCEE","#882255","#CC6677"),
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days from sx)")
+print(p1)
+ggsave(filename = "~/Dog/canine_OS_survfigure.pdf", plot=p1$plot, width = 9, height = 6)
+
+surv <- survfit(Surv(DFS_time, DFS_status) ~ primary_immune_subtype, data = ccc1)
+diff <- survdiff(Surv(DFS_time, DFS_status) ~ primary_immune_subtype, data = ccc1)
+
+p1 <- ggsurvplot(surv, data = ccc1,
+                  legend.title = "",
+                 legend = "right",
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                 palette = c("#88CCEE","#882255","#CC6677"),
+                  ggtheme = theme(text = element_text(size = 15)) + theme_bw() # Change ggplot2 theme
+) + xlab("Time (days from sx)")
+print(p1)
+ggsave(filename = "~/Dog/canine_DFS_survfigure.pdf", plot=p1$plot, width = 9, height = 6)
+```
+
+
+```{r}
+cph_dat <- data.frame(time = cc1$DFS_time,
+subtype = cc1$primary_immune_subtype,
+status = cc1$DFS_status,
+location = c("NPH","PH")[as.numeric(ccc1$PH)+1],
+ALP = cc1$ALP,
+age = scale(as.numeric(cc1$age)),
+gender = cc1$gender,
+weight = scale(cc1$weight),
+treatment = c("SOC","Sirolimus+SOC")[as.numeric(cc1$treatment == "Rapamycin")+1])
+cph_dat$gender[grepl("female", ignore.case = T, cph_dat$gender)] = "F"
+cph_dat$gender[grepl("male", ignore.case = T, cph_dat$gender)] = "M"
+cph_dat$ALP[cph_dat$ALP != "Elevated"] = "Normal"
+#cph_dat$isFemale = as.numeric(cph_dat$isFemale == "F")
+cph_dat$ALP <- relevel(as.factor(cph_dat$ALP), ref = "Normal")
+cph_dat$treatment <- relevel(as.factor(cph_dat$treatment), ref = "SOC")
+cph_dat$location <- relevel(as.factor(cph_dat$location), ref = "NPH")
+cph_dat$gender <- relevel(as.factor(cph_dat$gender), ref = "M")
+fit <- coxph(Surv(time, status) ~ location + ALP + age + gender + weight + treatment +  subtype, data = cph_dat)
+p1 <- ggforest(fit, data = cph_dat,fontsize = 0.7, noDigits = 2) + theme(text = element_text(size = 15))
+ggsave(plot = p1, filename = "~/Dog/ggforest_DFS.pdf", width = 6, height = 8)
+
+
+cph_dat <- data.frame(time = cc1$OS_time,
+subtype = cc1$primary_immune_subtype,
+status = cc1$OS_status,
+location = c("NPH","PH")[as.numeric(ccc1$PH)+1],
+ALP = cc1$ALP,
+age = scale(as.numeric(cc1$age)),
+gender = cc1$gender,
+weight = scale(cc1$weight),
+treatment = c("SOC","Sirolimus+SOC")[as.numeric(cc1$treatment == "Rapamycin")+1])
+cph_dat$gender[grepl("female", ignore.case = T, cph_dat$gender)] = "F"
+cph_dat$gender[grepl("male", ignore.case = T, cph_dat$gender)] = "M"
+cph_dat$ALP[cph_dat$ALP != "Elevated"] = "Normal"
+#cph_dat$isFemale = as.numeric(cph_dat$isFemale == "F")
+cph_dat$ALP <- relevel(as.factor(cph_dat$ALP), ref = "Normal")
+cph_dat$treatment <- relevel(as.factor(cph_dat$treatment), ref = "SOC")
+cph_dat$location <- relevel(as.factor(cph_dat$location), ref = "NPH")
+cph_dat$gender <- relevel(as.factor(cph_dat$gender), ref = "M")
+fit <- coxph(Surv(time, status) ~ location + ALP + age + gender + weight + treatment +  subtype, data = cph_dat)
+p2 <-ggforest(fit, data = cph_dat,fontsize = 0.7, noDigits = 2) + theme(text = element_text(size = 15))
+
+ggsave(plot = p2, filename = "~/Dog/ggforest_OS.pdf", width = 6, height = 8)
+
+fig <- ggarrange(p2,p1, ncol = 2, nrow = 1, labels = c("C","D"))
+ggsave(plot = fig, filename = "~/Dog/ggforest_figures.pdf",width = 12, height = 8)
+```
+
+```{r}
+library(randomForest)
+library(caret)
+library(e1071)
+library(gbm)
+library(naivebayes)
+set.seed(268548)
+human_test <- cbind(data.frame(cellprop_allhuman), imm_clus = imm_clus_all)
+colnames(human_test) <- gsub("\\.","_", colnames(human_test))
+df <- cbind(data.frame(rbind(cellprop_rnaseq[sample_type == "Primary",], cellprop_nano[sstatus == "Primary Tumor",])), imm_clus = c(imm_clus[sample_type=="Primary"],imm_clus_nano[sstatus=="Primary Tumor"]))
+df$imm_clus <- as.factor(df$imm_clus)
+colnames(df) <- gsub("\\.","_",colnames(df))
+df <- df[,intersect(colnames(df), colnames(human_test))]
+ind <- c(sample(which(df$imm_clus == "IE"),size = 50,replace = T), sample(which(df$imm_clus == "IE-ECM"),size = 50,replace = T), sample(which(df$imm_clus == "ID"),size = 50,replace = T))
+
+#data augmentation
+cp1 <- t(apply(df[ind,1:(ncol(df))-1],1,function(x) x + rnorm((ncol(df))-1, mean = 0, sd = 0.01)))
+df1 <- cbind(data.frame(cp1), df$imm_clus[ind])
+colnames(df1) <- colnames(df)
+#train <- df[ind==1,]
+#test <- df[ind==2,]
+rf <- randomForest(imm_clus~., data=df1, proximity=TRUE)
+print(rf)
+svmfit <- svm(imm_clus~., data = df1, kernel = "linear", cost=10)
+control <- trainControl(method = "cv", number=10)
+nb <- train(imm_clus ~ ., data = df1, "naive_bayes", trainControl = control, tuneGrid = data.frame(usekernel = FALSE, laplace = 0, adjust=0))
+print(svmfit)
+model_gbm = gbm(imm_clus ~.,
+              data = df1,
+              distribution = "multinomial",
+              cv.folds = 10,
+              shrinkage = .01,
+              n.minobsinnode = 10,
+              n.trees = 500)
+print(summary(model_gbm))
+```
+
+
+
+```{r}
+preds <- predict(nb, human_test)
+confusionMatrix(preds, human_test$imm_clus)
+
+pred_test = predict.gbm(object = model_gbm,
+                   newdata = human_test,
+                   n.trees = 500,           # 500 tress to be built
+                   type = "response")
+#pred_test
+class_names = colnames(pred_test)[apply(pred_test, 1, which.max)]
+confusionMatrix(factor(class_names, levels = c("IE","IE-ECM","ID")), human_test$imm_clus)
+```
+```{r}
+ha = rowAnnotation(
+    dataset = c(rep("TARGET", length(imm_clus_target)), rep("GSE21257", length(imm_clus2)), rep("GSE39055", length(imm_clus3)), rep("GSE33383",length(imm_clus4))),
+    col = list("dataset" = c("TARGET" = "#DDCC77", "GSE21257" =  "#6699CC", "GSE39055" = "#AA4499", "GSE33383" = "#888888" )
+    )
+)
+
+ha2 = rowAnnotation(
+    dataset = c(rep("Bulk RNASeq", length(sample_type[sample_type == "Primary"])), rep("Nanostring", length(sstatus[sstatus == "Primary Tumor"]))),
+    col = list("dataset" = c("Bulk RNASeq" = "#DDCC77", "Nanostring" = "#AA4499" )
+    )
+)
+ha3 = rowAnnotation(
+  sample = rep("Primary", sum(sample_type == "Primary") + sum(sstatus == "Primary Tumor")),
+  col = list("sample" = c("Primary"="yellow"))
+)
+Heatmap(rbind(cellprop_rnaseq[sample_type == "Primary", colnames(cellprop_allhuman)],cellprop_nano[sstatus == "Primary Tumor",colnames(cellprop_allhuman)]), row_split = c(imm_clus[sample_type == "Primary"],imm_clus_nano[sstatus=="Primary Tumor"]), cluster_columns = F, row_gap = unit(5,"mm"), right_annotation = ha2, left_annotation = ha3, cluster_row_slices = F)
+
+pdf("~/Dog/canine_naive_bayes_heatmap.pdf", height = 11, width = 6)
+Heatmap(rbind(cellprop_rnaseq[sample_type == "Primary", colnames(cellprop_allhuman)],cellprop_nano[sstatus == "Primary Tumor",colnames(cellprop_allhuman)]), row_split = c(imm_clus[sample_type == "Primary"],imm_clus_nano[sstatus=="Primary Tumor"]), cluster_columns = F, row_gap = unit(5,"mm"), right_annotation = ha2, left_annotation = ha3, cluster_row_slices = F)
+dev.off()
+
+ha3 = rowAnnotation(
+  sample = rep("Primary", nrow(cellprop_allhuman)),
+  col = list("sample" = c("Primary"="yellow"))
+)
+Heatmap(cellprop_allhuman, row_split = preds, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")), right_annotation = ha, left_annotation = ha3)
+
+pdf("~/Dog/Human_naive_bayes_heatmap.pdf", height = 11, width = 6)
+Heatmap(cellprop_allhuman, row_split = preds, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")), right_annotation = ha, left_annotation = ha3)
+dev.off()
+dh1 <- melt(cbind(data.frame(cellprop_allhuman),subtype = preds))
+ggplot(data = dh1, aes(x=variable, y=value, fill=subtype)) + geom_boxplot()
+
+```
+```{r}
+cc1 <- clindat_all
+rownames(cc1) <- as.character(clindat_all$`Patient ID`)
+met_dd1 <- data.frame(surv_group = c("shorter survival","longer survival")[as.numeric(cc1[matched_cases$case[matched_cases$sample_type == "Primary"], "OS_time"] > median(cc1$OS_time[cc1$OS_status==1]))+1], os_status = as.numeric(cc1[matched_cases$case[matched_cases$sample_type == "Primary"], "OS_status"]), os_time = as.numeric(cc1[matched_cases$case[matched_cases$sample_type == "Primary"], "OS_time"]), met_subtype = matched_cases$immune_subtype[matched_cases$sample_type == "Primary"], sites = matched_cases$compressed_site[matched_cases$sample_type == "Primary"], matched_cases[matched_cases$sample_type == "Primary",1:10])
+met_dd1 <- met_dd1[!is.na(met_dd1$surv_group),]
+met_dd1$met_subtype <- factor(met_dd1$met_subtype, levels = c("IE","IE-ECM","ID"))
+
+ha <- columnAnnotation(
+  group = met_dd1$surv_group,
+  preservation = matched_cases$prep[matched_cases$sample_type == "Primary"],
+  platform = matched_cases$source[matched_cases$sample_type == "Primary"],
+  subtype = matched_cases$immune_subtype[matched_cases$sample_type == "Primary"],
+  col = list(
+               "preservation" = c("Frozen" = "#db6d00", 
+                                  "FFPE" = "#924900"),
+               "platform" = c("Nanostring" = "#525252",
+                              "RNASeq" = "#F2F0F7"),
+               "subtype" = c("ID" = "#88CCEE",
+                             "IE" = "#882255",
+                             "IE-ECM" = "#CC6677"),
+               "group" = c("shorter survival"="#AE017E",
+                       "longer survival"="#FDAE61")
+    )
+)
+mat <- as.matrix(t(met_dd1[,6:ncol(met_dd1)]))
+colnames(mat) <- matched_cases$case[matched_cases$sample_type == "Primary"]
+colnames(mat) <- gsub("X","",colnames(mat))
+colnames(mat) <- gsub("(\\.1)|(\\.2)|(\\.3)|(\\.4)|(\\.5)|(\\.6)","",colnames(mat))
+Heatmap(mat, column_split = met_dd1$met_subtype, top_annotation = ha, cluster_rows = F, cluster_columns = T, cluster_column_slices = F,column_gap = unit(1, "mm"))
+pdf("~/Dog/matched_primary_sites_heatmap.pdf", width = 16, height = 4)
+Heatmap(mat, column_split = met_dd1$met_subtype, top_annotation = ha, cluster_rows = F, cluster_column_slices = F,column_gap = unit(2, "mm"))
+dev.off()
+
+#Heatmap(as.matrix(met_dd1[,6:ncol(met_dd1)]), row_split = met_dd1$surv_group, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), right_annotation = ha2)
+met_dd2 <- melt(met_dd1[,c(1,6:ncol(met_dd1))])
+p1 <- ggplot(data = met_dd2, aes(x = variable, y = value, fill = surv_group)) + geom_boxplot() + theme_bw() + theme(text = element_text(size = 15), axis.text.x = element_text(angle = 90)) + stat_compare_means(aes(group = surv_group), label = "p.signif") + ylim(c(-4,4))
+print(p1)
+#ggsave(filename = "~/Dog/primary_survival_association.pdf",plot = p1, width = 16, height = 5)
+```
+
+```{r}
+cc1 <- clindat_all
+rownames(cc1) <- as.character(clindat_all$`Patient ID`)
+
+met_dd1 <- data.frame(surv_group = c("shorter survival","longer survival")[as.numeric(cc1[matched_cases$case[matched_cases$sample_type == "Metastatic"], "OS_time"] > median(cc1$OS_time[cc1$OS_status==1]))+1], os_status = as.numeric(cc1[matched_cases$case[matched_cases$sample_type == "Metastatic"], "OS_status"]), os_time = as.numeric(cc1[matched_cases$case[matched_cases$sample_type == "Metastatic"], "OS_time"]), met_subtype = matched_cases$immune_subtype[matched_cases$sample_type == "Metastatic"], sites = matched_cases$compressed_site[matched_cases$sample_type == "Metastatic"], matched_cases[matched_cases$sample_type == "Metastatic",1:10])
+met_dd1 <- met_dd1[!is.na(met_dd1$surv_group),]
+
+ha <- columnAnnotation(
+  group = met_dd1$surv_group,
+  preservation = matched_cases$prep[matched_cases$sample_type == "Metastatic"],
+  platform = matched_cases$source[matched_cases$sample_type == "Metastatic"],
+  subtype = matched_cases$immune_subtype[matched_cases$sample_type == "Metastatic"],
+  col = list(
+               "preservation" = c("Frozen" = "#db6d00", 
+                                  "FFPE" = "#924900"),
+               "platform" = c("Nanostring" = "#525252",
+                              "RNASeq" = "#F2F0F7"),
+               "subtype" = c("ID" = "#88CCEE",
+                             "IE" = "#882255",
+                             "IE-ECM" = "#CC6677"),
+             group = c("shorter survival"="#AE017E",
+                       "longer survival"="#FDAE61")
+    )
+)
+mat <- as.matrix(t(met_dd1[,6:ncol(met_dd1)]))
+colnames(mat) <- matched_cases$case[matched_cases$sample_type == "Metastatic"]
+colnames(mat) <- gsub("X","",colnames(mat))
+colnames(mat) <- gsub("(\\.1)|(\\.2)|(\\.3)|(\\.4)|(\\.5)|(\\.6)","",colnames(mat))
+Heatmap(mat, column_split = met_dd1$sites, bottom_annotation = ha, cluster_rows = F, cluster_column_slices = F,column_gap = unit(1, "mm"))
+pdf("~/Dog/met_sites_survival_association.pdf", width = 16, height = 4)
+Heatmap(mat, column_split = met_dd1$sites, bottom_annotation = ha, cluster_rows = F, cluster_column_slices = F,column_gap = unit(1, "mm"))
+dev.off()
+
+#Heatmap(as.matrix(met_dd1[,6:ncol(met_dd1)]), row_split = met_dd1$surv_group, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), right_annotation = ha2)
+met_dd2 <- melt(met_dd1[,c(1,6:ncol(met_dd1))])
+p1 <- ggplot(data = met_dd2, aes(x = variable, y = value, fill = surv_group)) + geom_boxplot() + theme_bw() + theme(text = element_text(size = 15), axis.text.x = element_text(angle = 90)) + stat_compare_means(aes(group = surv_group), label = "p.signif") + ylim(c(-4,4))
+print(p1)
+ggsave(filename = "~/Dog/met_survival_association.pdf",plot = p1, width = 12, height = 7)
+
+```
+
+```{r}
+troy_dataset <- read_excel("~/Dog/McEachron_Human_Osteosarcoma_NanoString_IO360_data.xlsx", sheet = "Log2 Norm Gene Expression", 
+skip = 3)
+set.seed(2425)
+mets <- c(rep("Metastatic",8), rep("Post treatment Primary",11), rep("Metastatic",2), rep("Recurrent",2))
+troy_dataset <- as.data.frame(troy_dataset)
+rownames(troy_dataset) <- troy_dataset$`Sample ID`
+troy_dataset <- troy_dataset[,-1]
+troy_dataset <- as.matrix(troy_dataset)
+cellprop_primary_human <- t(MCPcounter.estimate(expression = troy_dataset, featuresType = "HUGO_symbols"))
+
+cellprop_primary_human <- apply(cellprop_primary_human, 2, scale)
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_primary_human, centers = 3, nstart = 100, iter.max = 500)
+imm_clus_prim_human <- rep("ID", nrow(cellprop_primary_human))
+imm_clus_prim_human[km.res$cluster == 1] <- "IE"
+imm_clus_prim_human[km.res$cluster == 3] <- "IE fibrotic"
+ha = rowAnnotation(
+    status = mets,
+    col = list("status" = c("Post treatment Primary" = "yellow", "Metastatic" =  "green","Recurrent" = "orange")
+    )
+)
+imm_clus_prim_human <- factor(imm_clus_prim_human, levels = c("IE","IE fibrotic", "ID"))
+Heatmap(cellprop_primary_human, row_split = imm_clus_prim_human, cluster_columns = F, left_annotation = ha, cluster_row_slices = FALSE, row_gap = unit(5, "mm"))
+names(imm_clus_prim_human) <- colnames(troy_dataset)
+```
+
+```{r}
+troy_sig <- read_excel("~/Dog/McEachron_Human_Osteosarcoma_NanoString_IO360_data.xlsx", sheet = "Gene Signatures", skip = 3)
+troy_sig <- as.matrix(troy_sig)
+mets <- c(rep("Metastatic",8), rep("Post treatment Primary",11), rep("Metastatic",2), rep("Recurrent",2)) 
+rownames(troy_sig) <- troy_sig[,1]
+troy_sig <- troy_sig[,-1]
+class(troy_sig) <- "numeric"
+troy_sig <- troy_sig[,colnames(troy_dataset)]
+#cellprop_primary_human2 <- t(MCPcounter.estimate(expression = troy_dataset, featuresType = "HUGO_symbols"))
+
+set.seed(2425)
+cellprop_primary_human <- apply(t(troy_sig), 2, scale)
+colnames(cellprop_primary_human) <- rownames(troy_sig)
+#cellprop_primary_human <- 
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_primary_human[,colnames(cellprop_primary_human)[c(10:13,26,28,29,30,32,33,34,36,37)]], centers = 3, nstart = 100, iter.max = 500)
+imm_clus_prim_human <- rep("ID", nrow(cellprop_primary_human))
+imm_clus_prim_human[km.res$cluster == 3] <- "IE"
+imm_clus_prim_human[km.res$cluster == 2] <- "IE fibrotic"
+Heatmap(cellprop_primary_human, row_split = imm_clus_prim_human, cluster_columns = T)
+#names(imm_clus_prim_human) <- colnames(troy_dataset)
+```
+```{r}
+cellprop_primary_human2 <- t(MCPcounter.estimate(expression = troy_dataset, featuresType = "HUGO_symbols"))
+
+set.seed(2425)
+cellprop_primary_human2 <- apply(cellprop_primary_human2, 2, scale)
+#colnames(cellprop_primary_human2) <- rownames(troy_sig)
+#cellprop_primary_human <- 
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_primary_human2, centers = 3, nstart = 100, iter.max = 500)
+imm_clus_prim_human2 <- rep("ID", nrow(cellprop_primary_human2))
+imm_clus_prim_human2[km.res$cluster == 1] <- "IE"
+imm_clus_prim_human2[km.res$cluster == 3] <- "IE fibrotic"
+ha = rowAnnotation(
+    status = mets,
+    col = list("status" = c("Post treatment Primary" = "yellow", "Metastatic" =  "green","Recurrent" = "orange")
+    )
+)
+Heatmap(cellprop_primary_human, row_split = imm_clus_prim_human2, cluster_columns = T,left_annotation = ha)
+```
+
+
+
+```{r}
+Bagev_signatures <- read_excel("~/Dog/Bagev_signatures.xlsx")
+sig <- sapply(unique(Bagev_signatures$`Gene signature`), function(x) return(as.character(Bagev_signatures$Gene[Bagev_signatures$`Gene signature` == x])))
+ 
+bagev_prop <- sapply(sig, function(x) {
+  gset <- intersect(x, rownames(cbind(CE[,NaAn$`Sample Type` %in% c("Primary Tumor")],CE[,NaAn$`Sample Type` %in% c("Met")])))
+  scores <- colMeans(log2(cbind(CE[,NaAn$`Sample Type` %in% c("Primary Tumor")],CE[,NaAn$`Sample Type` %in% c("Met")]+1))[gset,], na.rm = T)
+  return(scores)
+}) 
+```
+
+
+
+```{r}
+library(reshape)
+NAT_RawCountFile_rsemgenes <- read_delim("~/Dog/NAT_RawCountFile_rsemgenes.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+NAT_RawCountFile_rsemgenes <- as.data.frame(NAT_RawCountFile_rsemgenes)
+rownames(NAT_RawCountFile_rsemgenes) <- NAT_RawCountFile_rsemgenes$gene_id
+NAT_RawCountFile_rsemgenes <- NAT_RawCountFile_rsemgenes[,-1]
+rownames(NAT_RawCountFile_rsemgenes) <- gsub("_3","", rownames(NAT_RawCountFile_rsemgenes))
+NAT_RawCountFile_rsemgenes_tpm <- apply(NAT_RawCountFile_rsemgenes,2,function(x) x*10^6/sum(x,na.rm = T))
+rownames(NAT_RawCountFile_rsemgenes_tpm) <- rownames(NAT_RawCountFile_rsemgenes)
+colnames(NAT_RawCountFile_rsemgenes_tpm) <- colnames(NAT_RawCountFile_rsemgenes)
+
+cellprop_nat <- t(MCPcounter.estimate(expression = log2(NAT_RawCountFile_rsemgenes_tpm+1), featuresType = "HUGO_symbols"))
+#out <- t(xCellAnalysis(canin_exp))
+cellprop_nat <- apply(cellprop_nat, 2, scale)
+rownames(cellprop_nat) <- colnames(NAT_RawCountFile_rsemgenes_tpm)
+samp_nats_brain <- c("22_0327_normal_brain","31_0803_normal_brain","36_2204_normal_brain","39_2202_normal_brain","43_0821_brain","44_0817_brain","48_0802_brain","55_0811_brain","57_0807_brain","59_0814_brain_normal","62_0808_brain" )
+mt <- rep("no", length(samp_nats_brain))
+mt[c(1,4,7)] <- "yes"
+samp_met <- rep("normal",nrow(cellprop_nat[!grepl("met|(Met)|(Mets)",rownames(cellprop_nat)),]))
+samp_met2 <- sstatus[sstatus == "Met"]
+samp_met3 <- sample_type[sample_type == "Met"]
+samp_met2[samp_met2 == "Met"] <- "met"
+samp_met3[samp_met3 == "Met"] <- "met"
+ha = rowAnnotation(
+    sample = c(samp_met, samp_met2, samp_met3),
+    col = list("sample" = c("normal" = "yellow", "met" =  "green")
+    )
+)
+
+combined = rbind(rbind(cellprop_nat[!grepl("met|(Met)|(Mets)",rownames(cellprop_nat)),], cellprop_nano[sstatus=="Met",]), cellprop_primary2[sample_type == "Met",])
+ha = rowAnnotation(
+    sample = c(samp_met, samp_met2, samp_met3),
+    col = list("sample" = c("normal" = "yellow", "met" =  "green")
+    )
+)
+Heatmap(combined[c(samp_met, samp_met2, samp_met3) == "normal",], cluster_columns = F)
+Heatmap(combined[c(samp_met, samp_met2, samp_met3) == "met",], cluster_columns = F)
+
+ha = rowAnnotation(
+    mets_in_brain = mt,
+    col = list("mets_in_brain" = c("yes" = "green", "no" =  "yellow")
+    )
+)
+Heatmap(cellprop_nat[samp_nats_brain,], cluster_columns = F, right_annotation = ha)
+dnb <- melt(cellprop_nat[samp_nats_brain,])
+colnames(dnb) <- c("id","cell_type", "score")
+dnb$had_brain_mets <- rep(mt,10)
+ggplot(data = dnb, aes(x = cell_type, y = score, fill = had_brain_mets)) + geom_boxplot() + theme_minimal() + theme(text = element_text(size = 20), axis.text.x = element_text(angle = 90)) + stat_compare_means(aes(group = had_brain_mets), label = "p.signif") + xlab("cell type") + ylab("MCP counter score (scaled)")
+```
+
+```{r}
+dmn <- rbind(rbind(cellprop_nat[!grepl("met|(Met)|(Mets)",rownames(cellprop_nat)),], cellprop_nano[sstatus=="Met",]), cellprop_primary2[sample_type == "Met",])
+s_dmn <- c(samp_met, samp_met2, samp_met3)
+
+dmn_1 <- melt(dmn)
+colnames(dmn_1) <- c("id","cell_type", "score")
+dmn_1$sample <- rep(s_dmn,10)
+ggplot(data = dmn_1, aes(x = cell_type, y = score, fill = sample)) + geom_boxplot() + theme_minimal() + theme(text = element_text(size = 20), axis.text.x = element_text(angle = 90)) + stat_compare_means(aes(group = sample), label = "p.signif") + xlab("cell type") + ylab("MCP counter score (scaled)")
+
+ggplot(data = dmn_1[grepl("(liver)|(Liver)", dmn_1$id),], aes(x = cell_type, y = score, fill = sample)) + geom_boxplot() + theme_minimal() + theme(text = element_text(size = 20), axis.text.x = element_text(angle = 90)) + stat_compare_means(aes(group = sample), label = "p.signif") + xlab("cell type") + ylab("MCP counter score (scaled)")
+
+ggplot(data = dmn_1[grepl("(lung)|(Lung)", dmn_1$id),], aes(x = cell_type, y = score, fill = sample)) + geom_boxplot() + theme_minimal() + theme(text = element_text(size = 20), axis.text.x = element_text(angle = 90)) + stat_compare_means(aes(group = sample), label = "p.signif") + xlab("cell type") + ylab("MCP counter score (scaled)")
+
+```
+
+```{r}
+library(edgeR)
+library(matrixStats)
+library(fgsea)
+library(tidyverse)
+library(msigdbr)
+library(clusterProfiler)
+DOG2_Raw_RNA_SEQ_DATA <- read_csv("~/Dog/DOG2_Raw_RNA_SEQ_DATA.csv")
+genes <- DOG2_Raw_RNA_SEQ_DATA$gene_id
+genes <- sapply(genes, function(x) strsplit(x, split = "_")[[1]][1])
+DOG2_Raw_RNA_SEQ_DATA$gene_id <- NULL
+
+groups = ii1[colnames(DOG2_Raw_RNA_SEQ_DATA)]
+groups = c("rest","IE")[as.numeric(groups == "IE")+1]
+counts.DGEList <- DGEList(counts = DOG2_Raw_RNA_SEQ_DATA, genes = genes, group = as.factor(groups))
+counts.keep <- filterByExpr(y = counts.DGEList)
+counts.DGEList <- counts.DGEList[counts.keep, , keep.lib.sizes = FALSE]
+counts.DGEList <- calcNormFactors(counts.DGEList)
+counts.DGEList <- estimateDisp(counts.DGEList,design = model.matrix(~groups))
+rest_IE.DGEExact <- exactTest(counts.DGEList, pair = c("rest","IE"))
+msigdbr_df <- msigdbr(species = "Homo sapiens", category = "H")
+msigdbr_list = split(x = msigdbr_df$gene_symbol, f = msigdbr_df$gs_name)
+ranks <- rest_IE.DGEExact$table$logFC
+names(ranks) <- counts.DGEList$genes$genes
+ranks <- sort(ranks, decreasing = T)
+gsea_res <- GSEA(geneList = ranks, TERM2GENE = subset(msigdbr_df, select = c("gs_name","gene_symbol")),pvalueCutoff = 1)
+fgseaResTidy_IE <- gsea_res %>%
+as_tibble() %>%
+arrange(desc(NES))
+p1 <- ggplot(fgseaResTidy_IE, aes(reorder(ID, NES), NES)) +
+geom_col(aes(fill=p.adjust < 0.05)) +
+coord_flip() +
+labs(x="Pathway", y="Normalized Enrichment Score",title="Hallmark pathways NES from GSEA") + 
+  theme_minimal()
+print(p1)
+
+```
+
+```{r}
+#cutoff <- 1
+#drop <- which(apply((combined_expr[,grepl("(lung)|(Lung)", colnames(combined_expr))]), 1, max) < cutoff)
+#d <- combined_expr[,grepl("(lung)|(Lung)", colnames(combined_expr))]
+#can_expr <- canin_exp[,sample_type=="Primary"]
+#can_expr <- can_expr[rowMaxs(as.matrix(can_expr))>10,]
+#d <- can_expr
+#pheno <- imm_clus[sample_type=="Primary"]
+#pheno[pheno == "IE fibrotic"] <- "IE"
+#logcan_expr <- log2(can_expr+1)
+#########################################################
+
+#group <- factor(c("rest","IEECM")[as.numeric(pheno == "IE-ECM")+1])
+#mm <- model.matrix(~0 + group)
+#y <- voom(d, mm, plot = T)
+#fit <- lmFit(y, mm)
+#contr <- makeContrasts(groupIEECM - grouprest, levels = colnames(coef(fit)))
+#tmp <- contrasts.fit(fit, contr)
+#tmp <- eBayes(tmp)
+#top.table_1_vs_2 <- topTable(tmp, sort.by = "P", n = Inf)
+groups = ii1[colnames(DOG2_Raw_RNA_SEQ_DATA)]
+groups = c("rest","IE-ECM")[as.numeric(groups == "IE-ECM")+1]
+counts.DGEList <- DGEList(counts = DOG2_Raw_RNA_SEQ_DATA, genes = genes, group = as.factor(groups))
+counts.keep <- filterByExpr(y = counts.DGEList)
+counts.DGEList <- counts.DGEList[counts.keep, , keep.lib.sizes = FALSE]
+counts.DGEList <- calcNormFactors(counts.DGEList)
+counts.DGEList <- estimateDisp(counts.DGEList,design = model.matrix(~groups))
+rest_IEECM.DGEExact <- exactTest(counts.DGEList, pair = c("rest","IE-ECM"))
+msigdbr_df <- msigdbr(species = "Homo sapiens", category = "H")
+msigdbr_list = split(x = msigdbr_df$gene_symbol, f = msigdbr_df$gs_name)
+
+
+#ranks <- top.table_1_vs_2[,1]
+#names(ranks) <- rownames(top.table_1_vs_2)
+#ranks <- sort(ranks, decreasing = T)
+ranks <- rest_IEECM.DGEExact$table$logFC
+names(ranks) <- counts.DGEList$genes$genes
+ranks <- sort(ranks, decreasing = T)
+
+gsea_res <- GSEA(geneList = ranks, TERM2GENE = subset(msigdbr_df, select = c("gs_name","gene_symbol")), pvalueCutoff = 1, nPermSimple=100000)
+#fgseaRes <- fgsea(msigdbr_list, ranks, minSize=15, maxSize = 500, nperm=10000)
+#fgseaRes <- fgseaRes[!is.na(fgseaRes$NES),]
+
+fgseaResTidy_IEECM <- gsea_res %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+#fgseaResTidy <- fgseaResTidy[c(1:25, (nrow(fgseaResTidy)-24):nrow(fgseaResTidy)),]
+
+
+p1 <- ggplot(fgseaResTidy_IEECM, aes(reorder(ID, NES), NES)) +
+  geom_col(aes(fill=p.adjust < 0.05)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Hallmark pathways NES from GSEA") + 
+  theme_minimal()
+print(p1)
+ggsave(plot = p1, filename = "~/Dog/IEECM_enrichmentplot.pdf")
+```
+
+```{r}
+#cutoff <- 1
+#drop <- which(apply((combined_expr[,grepl("(lung)|(Lung)", colnames(combined_expr))]), 1, max) < cutoff)
+#d <- combined_expr[,grepl("(lung)|(Lung)", colnames(combined_expr))]
+#can_expr <- canin_exp[,sample_type=="Primary"]
+#can_expr <- can_expr[rowMaxs(as.matrix(can_expr))>10,]
+#d <- can_expr
+#pheno <- imm_clus[sample_type=="Primary"]
+#pheno[pheno == "IE fibrotic"] <- "IE"
+#logcan_expr <- log2(can_expr+1)
+#########################################################
+
+#group <- factor(c("rest","ID")[as.numeric(pheno == "ID")+1])
+#mm <- model.matrix(~0 + group)
+#y <- voom(d, mm, plot = T)
+#fit <- lmFit(y, mm)
+#contr <- makeContrasts(groupID - grouprest, levels = colnames(coef(fit)))
+#tmp <- contrasts.fit(fit, contr)
+#tmp <- eBayes(tmp)
+#top.table_1_vs_2 <- topTable(tmp, sort.by = "P", n = Inf)
+groups = ii1[colnames(DOG2_Raw_RNA_SEQ_DATA)]
+groups = c("rest","ID")[as.numeric(groups == "ID")+1]
+counts.DGEList <- DGEList(counts = DOG2_Raw_RNA_SEQ_DATA, genes = genes, group = as.factor(groups))
+counts.keep <- filterByExpr(y = counts.DGEList)
+counts.DGEList <- counts.DGEList[counts.keep, , keep.lib.sizes = FALSE]
+counts.DGEList <- calcNormFactors(counts.DGEList)
+counts.DGEList <- estimateDisp(counts.DGEList,design = model.matrix(~groups))
+rest_ID.DGEExact <- exactTest(counts.DGEList, pair = c("rest","ID"))
+
+
+msigdbr_df <- msigdbr(species = "Homo sapiens", category = "H")
+msigdbr_list = split(x = msigdbr_df$gene_symbol, f = msigdbr_df$gs_name)
+
+
+#ranks <- top.table_1_vs_2[,1]
+#names(ranks) <- rownames(top.table_1_vs_2)
+#ranks <- sort(ranks, decreasing = T)
+ranks <- rest_ID.DGEExact$table$logFC
+names(ranks) <- counts.DGEList$genes$genes
+ranks <- sort(ranks, decreasing = T)
+
+gsea_res <- GSEA(geneList = ranks, TERM2GENE = subset(msigdbr_df, select = c("gs_name","gene_symbol")),pvalueCutoff = 1, nPermSimple = 100000)
+
+
+fgseaResTidy_ID <- gsea_res %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+#fgseaResTidy <- fgseaResTidy[c(1:25, (nrow(fgseaResTidy)-24):nrow(fgseaResTidy)),]
+
+
+p1 <- ggplot(fgseaResTidy_ID, aes(reorder(ID, NES), NES)) +
+  geom_col((aes(fill=p.adjust < 0.05))) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Hallmark pathways NES from GSEA") + 
+  theme_minimal()
+print(p1)
+ggsave(plot = p1, filename = "~/Dog/ID_enrichmentplot.pdf")
+```
+
+```{r}
+NES_IE <- fgseaResTidy_IE$NES
+names(NES_IE) <- fgseaResTidy_IE$ID
+NES_IEECM <- fgseaResTidy_IEECM$NES
+names(NES_IEECM) <- fgseaResTidy_IEECM$ID
+NES_ID <- fgseaResTidy_ID$NES
+names(NES_ID) <- fgseaResTidy_ID$NES
+NES_ID <- fgseaResTidy_ID$NES
+names(NES_ID) <- fgseaResTidy_ID$ID
+NES_mat <- cbind(NES_IE, cbind(NES_IEECM[names(NES_IE)], NES_ID[names(NES_IE)]))
+rownames(NES_mat) <- names(NES_IE)
+lpval_IE <- -log10(fgseaResTidy_IE$p.adjust)
+names(lpval_IE) <- fgseaResTidy_IE$ID
+lpval_IEECM <- -log10(fgseaResTidy_IEECM$p.adjust)
+names(lpval_IEECM) <- fgseaResTidy_IEECM$ID
+lpval_ID <- -log10(fgseaResTidy_ID$p.adjust)
+names(lpval_ID) <- fgseaResTidy_ID$ID
+pval_mat <- cbind(lpval_IE, cbind(lpval_IEECM[names(lpval_IE)],lpval_ID[names(lpval_IE)]))
+rownames(pval_mat) <- names(lpval_IE)
+colnames(NES_mat) <- c("IE","IE-ECM","ID")
+
+NES_mat <- NES_mat[names(NES_IEECM),]
+pval_mat <- pval_mat[names(NES_IEECM),]
+
+layer_fun = function(j, i, x, y, w, h, fill){
+          grid.rect(x = x, y = y, width = w, height = h, 
+                    gp = gpar(col = NA, fill = NA))
+          grid.circle(x=x,y=y,r= pindex(pval_mat, i, j)/10 * unit(2, "mm"),
+                      gp = gpar(fill = col_fun(pindex(NES_mat, i, j)), col = NA))}
+
+
+lgd_list = list(
+    Legend( labels = c(0,2.5,5,7.5,10), title = "-log10(adjusted P-value)",
+            graphics = list(
+              function(x, y, w, h) grid.circle(x = x, y = y, r = 0 * unit(2, "mm"),
+                                               gp = gpar(fill = "black")),
+              function(x, y, w, h) grid.circle(x = x, y = y, r = 0.25 * unit(2, "mm"),
+                                               gp = gpar(fill = "black")),
+              function(x, y, w, h) grid.circle(x = x, y = y, r = 0.5 * unit(2, "mm"),
+                                               gp = gpar(fill = "black")),
+              function(x, y, w, h) grid.circle(x = x, y = y, r = 0.75 * unit(2, "mm"),
+                                               gp = gpar(fill = "black")),
+              function(x, y, w, h) grid.circle(x = x, y = y, r = 1 * unit(2, "mm"),
+                                               gp = gpar(fill = "black")))
+            ))
+
+set.seed(123)    
+hp<- Heatmap(NES_mat,
+        heatmap_legend_param=list(title="NES"),
+        col=col_fun,
+        rect_gp = gpar(type = "none"),
+        layer_fun = layer_fun,
+        row_names_gp = gpar(fontsize = 7.5),
+        cluster_rows = F,
+        cluster_columns = F)
+
+draw( hp, annotation_legend_list = lgd_list)
+```
+
+
+
+```{r}
+library("org.Hs.eg.db") 
+TARGET_OS_star_counts <- read_delim("~/Downloads/TARGET-OS.star_counts.tsv", 
+delim = "\t", escape_double = FALSE, 
+trim_ws = TRUE)
+
+genes <- TARGET_OS_star_counts$Ensembl_ID
+genes <- sapply(genes, function(x) strsplit(x, split = "\\.")[[1]][1])
+symbols <- mapIds(org.Hs.eg.db, keys = genes, keytype = "ENSEMBL", column="SYMBOL")
+#mart <- useDataset("hsapiens_gene_ensembl", useMart("ensembl"))
+#G_list <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id","hgnc_symbol"),values=genes,mart= mart)
+TARGET_OS_star_counts <- as.data.frame(TARGET_OS_star_counts)
+
+```
+
+```{r}
+TARGET_OS_star_counts <- TARGET_OS_star_counts[!is.na(symbols),]
+expr_human <- aggregate.data.frame(TARGET_OS_star_counts[,2:ncol(TARGET_OS_star_counts)], by = list(symbols[!is.na(symbols)]), FUN = mean, na.rm=T)
+```
+
+```{r}
+rownames(expr_human) <- expr_human$Group.1
+expr_human <- expr_human[,-1]
+#expr_human <- expr_human[-1,]
+```
+
+```{r}
+TARGET_OS_clinical <- read_delim("~/Downloads/TARGET-OS.clinical.tsv", delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+TARGET_OS_clinical <- as.data.frame(TARGET_OS_clinical)
+TARGET_OS_clinical <- TARGET_OS_clinical[!duplicated(TARGET_OS_clinical$sample_id),]
+rownames(TARGET_OS_clinical) <- TARGET_OS_clinical$sample_id
+```
+
+```{r}
+common <- intersect(rownames(TARGET_OS_clinical), colnames(expr_human))
+ee <- expr_human[,common]
+human_clin <- TARGET_OS_clinical[common,]
+```
+
+```{r}
+set.seed(2425)
+#ccommon = intersect(rownames(ee), intersect(rownames(expr_human2),rownames(expr_human3)))
+cellprop_human <- t(MCPcounter.estimate(expression = ee, featuresType = "HUGO_symbols", probesets = read.table("~/Dog/MCP_counter_markers.csv")))
+cellprop_human <- apply(cellprop_human, 2, scale)
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_human, centers = 3, nstart = 100, iter.max = 500)
+imm_clus_target <- rep("ID", nrow(cellprop_human))
+imm_clus_target[km.res$cluster == 3] <- "IE"
+imm_clus_target[km.res$cluster == 1] <- "IE-ECM"
+#imm_clus <- factor(imm_clus, levels = c("IE","IE fibrotic", "ID"))
+Heatmap(cellprop_human, row_split = imm_clus_target, cluster_columns = F, cluster_row_slices = FALSE, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")))
+names(imm_clus_target) <- colnames(ee)
+```
+
+
+
+```{r}
+pathways <- read_csv("~/NoamCCT/data/pathways.csv")
+recurrent_gene_modules <- read_excel("~/Dog/recurrent_gene_modules.xlsx")
+pathways <- recurrent_gene_modules
+pw_scores <- sapply(names(msigdbr_list)[grepl("SIGNALING", names(msigdbr_list))], function(x) {
+  gs <- as.character(msigdbr_list[[x]])
+  #gs <- gs[!is.na(gs)]
+  exprs <- colMeans((ee[intersect(rownames(ee),gs),]), na.rm = T)
+  #exprs <- colMeans(as.numeric(canin_exp[x,])
+  return(exprs)
+})
+colnames(pw_scores) <- names(msigdbr_list)[grepl("SIGNALING", names(msigdbr_list))]
+pw_scores <- apply(pw_scores,2,scale)
+#pw_scores <- pw_scores[,!is.na(colSums(pw_scores))]
+#km.res <- kmeans(pw_scores, centers = 3, nstart = 100, iter.max = 500)
+Heatmap(t(pw_scores), cluster_rows = T, column_split = imm_clus)
+```
+
+```{r}
+hc2 <- TARGET_OS_clinical
+hc2 <- hc2[!is.na(hc2$`Disease at diagnosis`),]
+hc2 <- hc2[!duplicated(hc2$`TARGET USI`),]
+hc2$time = as.numeric(hc2$`Overall Survival Time in Days`)
+hc2$status = as.numeric(hc2$`Vital Status` == "Dead")
+hc2$group = c("Metastatic disease at diagnosis","No metastatic disease at diagnosis")[as.numeric(grepl("Non-metastatic",hc2$`Disease at diagnosis`,ignore.case = T))+1]
+surv <- survfit(Surv(time, status) ~ group, data = hc2)
+diff <- survdiff(Surv(time, status) ~ group, data = hc2)
+p1 <- ggsurvplot(surv, data = hc2,
+legend.title = "",
+legend = c(0.75,1),
+#legend.labs = c("ID","IE","IE fibrotic"),
+conf.int = F,
+pval = TRUE,
+risk.table = TRUE,
+tables.height = 0.2,
+tables.theme = theme_cleantable(),
+risk.table.y.text = FALSE,
+pval.coord = c(0, 0.03),
+# Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+# or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+ggtheme =  theme_pubr(base_size = 20) # Change ggplot2 theme
+) + xlab("Time (days)")
+print(p1)
+
+```
+
+```{r}
+library(survival)
+library(survminer)
+human_clin <- human_clin[names(imm_clus_target),]
+human_clin$immune_subtype <- imm_clus_target
+hc <- data.frame(OS_time = as.numeric(human_clin$`Overall Survival Time in Days`), OS_status = as.numeric(human_clin$`Vital Status` == "Dead"),
+                 DFS_time = as.numeric(human_clin$`Time to First Event in Days`), DFS_status = as.numeric(human_clin$`First Event` == "Relapse"),
+                 immune_subtype = human_clin$immune_subtype,
+                 met_at_daig = toupper(human_clin$`Disease at diagnosis`),
+                 age = human_clin$`Age at Diagnosis in Days`/365,
+                 gender = c("M","F")[as.numeric(human_clin$Gender == "Female")+1])
+hc$necrosis <- NA
+hc$necrosis[!is.na(human_clin$`Percent necrosis`)] <- c("0-90","91-100")[as.numeric(as.numeric(human_clin$`Percent necrosis`[!is.na(human_clin$`Percent necrosis`)]) > 90)+1]
+hc$necrosis[!is.na(human_clin$`Histologic response`)] <-human_clin$`Histologic response`[!is.na(human_clin$`Histologic response`)]
+hc$necrosis[hc$necrosis %in% c("91-100","Stage 3/4","98","95") & !is.na(hc$necrosis)] <- ">90%"
+hc$necrosis[!(hc$necrosis %in% c(">90%")) & !is.na(hc$necrosis)] <- "<=90%"
+
+hc$met_at_daig[hc$met_at_daig == "METASTATIC (CONFIRMED)"] = "METASTATIC"
+hc$met_at_daig[hc$met_at_daig == "NON-METASTATIC (CONFIRMED)"] = "NON-METASTATIC"
+#hc <- hc[!is.na(hc$OS_status) & !is.na(hc$DFS_status),]
+#hc <- hc[hc$met_at_daig %in% c("NON-METASTATIC"),]
+surv <- survfit(Surv(OS_time, OS_status) ~ immune_subtype, data = hc)
+diff <- survdiff(Surv(OS_time, OS_status) ~ immune_subtype, data = hc)
+
+p1 <- ggsurvplot(surv, data = hc,
+                  
+                  legend.title = "",
+                 legend = "right",
+                 #legend.labs = c("ID","IE","IE fibrotic"),
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days)")
+print(p1)
+
+
+ surv <- survfit(Surv(DFS_time, DFS_status) ~ immune_subtype, data = hc)
+ diff <- survdiff(Surv(DFS_time, DFS_status) ~ immune_subtype, data = hc)
+# 
+ p1 <- ggsurvplot(surv, data = hc,
+                   
+                   legend.title = "",
+                  legend = "right",
+                  #legend.labs = c("ID","IE","IE fibrotic"),
+                   conf.int = F,
+                   pval = TRUE,
+                   risk.table = TRUE,
+                   tables.height = 0.2,
+                   tables.theme = theme_cleantable(),
+                   risk.table.y.text = FALSE,
+                  pval.coord = c(0, 0.03),
+                   # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                   # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                   ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+ ) + xlab("Time (days)")
+ print(p1)
+```
+```{r}
+human_clin$immune_subtype <- as.character(imm_clus_target)
+hc <- data.frame(OS_time = as.numeric(human_clin$`Overall Survival Time in Days`), OS_status = as.numeric(human_clin$`Vital Status` == "Dead"),
+                 DFS_time = as.numeric(human_clin$`Time to First Event in Days`), DFS_status = as.numeric(human_clin$`First Event` == "Relapse"),
+                 immune_subtype = human_clin$immune_subtype,
+                 met_at_daig = toupper(human_clin$`Disease at diagnosis`))
+hc$met_at_daig[hc$met_at_daig == "METASTATIC (CONFIRMED)"] = "METASTATIC"
+hc$met_at_daig[hc$met_at_daig == "NON-METASTATIC (CONFIRMED)"] = "NON-METASTATIC"
+hc <- hc[!is.na(hc$OS_status) & !is.na(hc$DFS_status),]
+hc$integrated <- hc$met_at_daig
+hc$integrated[hc$met_at_daig == "NON-METASTATIC"] <- hc$immune_subtype[hc$met_at_daig == "NON-METASTATIC"]
+hc <- hc[hc$met_at_daig %in% c("NON-METASTATIC"),]
+surv <- survfit(Surv(OS_time, OS_status) ~ immune_subtype, data = hc)
+diff <- survfit(Surv(OS_time, OS_status) ~ immune_subtype, data = hc)
+
+p1 <- ggsurvplot(surv, data = hc,
+                  
+                  legend.title = "",
+                 legend = "right",
+                 legend.labs = c("ID","IE","IE fibrotic"),
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days)")
+print(p1)
+
+
+ surv <- survfit(Surv(DFS_time, DFS_status) ~ immune_subtype, data = hc)
+ diff <- survfit(Surv(DFS_time, DFS_status) ~ immune_subtype, data = hc)
+# 
+ p1 <- ggsurvplot(surv, data = hc,
+                   
+                   legend.title = "",
+                  legend = "right",
+                  legend.labs = c("ID","IE","IE fibrotic"),
+                   conf.int = F,
+                   pval = TRUE,
+                   risk.table = TRUE,
+                   tables.height = 0.2,
+                   tables.theme = theme_cleantable(),
+                   risk.table.y.text = FALSE,
+                  pval.coord = c(0, 0.03),
+                   # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                   # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                   ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+ ) + xlab("Time (days)")
+ print(p1)
+ 
+```
+
+
+
+
+
+```{r}
+expr_human2 <- read_csv("~/Dog/GSE21257_expr.csv")
+expr_human2 <- as.data.frame(expr_human2)
+expr_human2 <- aggregate.data.frame(expr_human2[,2:ncol(expr_human2)], by = list(as.character(expr_human2[,1])), FUN = mean, na.rm = T)
+rownames(expr_human2) <- expr_human2[,1]
+expr_human2 <- expr_human2[,-1]
+expr_human2 <- as.matrix(expr_human2)
+
+set.seed(2425)
+cellprop_human2 <- t(MCPcounter.estimate(expression = expr_human2, featuresType = "HUGO_symbols", probesets = read.table("~/Dog/MCP_counter_markers.csv")))
+cellprop_human2 <- apply(cellprop_human2, 2, scale)
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_human2, centers = 3, nstart = 100, iter.max = 500)
+imm_clus2 <- rep("ID", nrow(cellprop_human2))
+imm_clus2[km.res$cluster == 1] <- "IE"
+imm_clus2[km.res$cluster == 3] <- "IE-ECM"
+#imm_clus2 <- factor(imm_clus2, levels = c("IE", "IE fibrotic", "ID"))
+Heatmap(cellprop_human2, row_split = imm_clus2, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")))
+names(imm_clus2) <- colnames(expr_human2)
+```
+
+
+```{r}
+human_clin2 <- read_delim("~/Dog/GSE21257_pheno.tsv", delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+human_clin2 <- as.data.frame(human_clin2)
+rownames(human_clin2) <- human_clin2$...1
+human_clin2 <- human_clin2[,-1]
+
+```
+
+```{r}
+human_clin2 <- human_clin2[names(imm_clus2),]
+human_clin2$`age:ch1` <- sapply(human_clin2$`age:ch1`, function(x) as.numeric(strsplit(x, split = " ")[[1]][1])/12)
+human_clin2$immune_subtype <- as.character(imm_clus2)
+hc2 <- data.frame(OS_time = as.numeric(human_clin2$OS_time*30), OS_status = as.numeric(human_clin2$OS_status),
+                 DFS_time = as.numeric(human_clin2$MFS_time*30), DFS_status = as.numeric(human_clin2$met_status),
+                 immune_subtype = human_clin2$immune_subtype,
+                 met_at_daig = human_clin2$`group:ch1`,
+                 age = human_clin2$`age:ch1`,
+                 gender = human_clin2$`gender:ch1`)
+hc2$met_at_daig = c("NON-METASTATIC","METASTATIC")[as.numeric(hc2$met_at_daig == "Metastases present at diagnosis")+1]
+#hc$met_at_daig[hc$met_at_daig != "METASTATIC)"] = "NON-METASTATIC"
+hc2 <- hc2[!is.na(hc2$OS_status) & !is.na(hc2$DFS_status),]
+hc2$necrosis <- NA
+#hc2 <- hc2[hc2$met_at_daig %in% c("NON-METASTATIC"),]
+surv <- survfit(Surv(OS_time, OS_status) ~ immune_subtype, data = hc2)
+diff <- survfit(Surv(OS_time, OS_status) ~ immune_subtype, data = hc2)
+
+p1 <- ggsurvplot(surv, data = hc2,
+                  
+                  legend.title = "",
+                 legend = "right",
+                 legend.labs = c("ID","IE","IE-ECM"),
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days)")
+print(p1)
+
+
+surv <- survfit(Surv(DFS_time, DFS_status) ~ immune_subtype, data = hc2)
+diff <- survfit(Surv(DFS_time, DFS_status) ~ immune_subtype, data = hc2)
+
+p1 <- ggsurvplot(surv, data = hc2,
+                  legend.title = "",
+                 legend = "right",
+                 #legend.labs = c("ID","IE","IE fibrotic"),
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days)")
+print(p1)
+```
+```{r}
+expr_human3 <- read_csv("~/Dog/GSE39055_expr.csv")
+expr_human3 <- as.data.frame(expr_human3)
+expr_human3 <- aggregate.data.frame(expr_human3[,2:ncol(expr_human3)], by = list(as.character(expr_human3[,1])), FUN = mean, na.rm = T)
+rownames(expr_human3) <- expr_human3[,1]
+expr_human3 <- expr_human3[,-1]
+#expr_human3 <- as.matrix(log2(expr_human3+1))
+
+set.seed(2425)
+cellprop_human3 <- t(MCPcounter.estimate(expression = expr_human3, featuresType = "HUGO_symbols",probesets = read.table("~/Dog/MCP_counter_markers.csv")))
+cellprop_human3 <- apply(cellprop_human3, 2, scale)
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_human3, centers = 3, nstart = 100, iter.max = 500)
+imm_clus3 <- rep("ID", nrow(cellprop_human3))
+imm_clus3[km.res$cluster == 1] <- "IE"
+imm_clus3[km.res$cluster == 2] <- "IE-ECM"
+#imm_clus3 <- factor(imm_clus3, levels = c("IE", "IE fibrotic", "ID"))
+Heatmap(cellprop_human3, row_split = imm_clus3, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")))
+names(imm_clus3) <- colnames(expr_human3)
+```
+
+```{r}
+human_clin3 <- read_delim("~/Dog/GSE39055_pheno.tsv", delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+human_clin3 <- as.data.frame(human_clin3)
+rownames(human_clin3) <- human_clin3$geo_accession
+#human_clin2 <- human_clin2[,-1]
+```
+
+```{r}
+human_clin3 <- human_clin3[names(imm_clus3),]
+human_clin3$immune_subtype <- as.character(imm_clus3)
+human_clin3$`age:ch1` <- sapply(human_clin3$`age:ch1`, function(x) as.numeric(strsplit(x, split = " ")[[1]][1]))
+#human_clin3[human_clin3$`time until first recurrence or latest follow-up (months):ch1` > 0,]
+hc3 <- data.frame(OS_time = NA, OS_status = NA,
+                 DFS_time = as.numeric(human_clin3$`time until first recurrence or latest follow-up (months):ch1`*30), DFS_status = as.numeric(human_clin3$`recurrence:ch1` == "Y"),
+                 immune_subtype = human_clin3$immune_subtype, met_at_daig = human_clin3$Metastatic_at_Diag,
+                 age = human_clin3$`age:ch1`,
+                 gender = c("M","F")[as.numeric(human_clin3$`gender:ch1` == "female")+1])
+
+hc3$necrosis <- c("<=90%",">90%")[as.numeric(human_clin3$necrosis =="Y")+1]
+
+#hc3 <- hc3[hc3$met_at_daig == "NON-METASTATIC",]
+surv <- survfit(Surv(DFS_time, DFS_status) ~ immune_subtype, data = hc3)
+diff <- survdiff(Surv(DFS_time, DFS_status) ~ immune_subtype, data = hc3)
+
+p1 <- ggsurvplot(surv, data = hc3,
+                  legend.title = "",
+                 legend = "right",
+                 #legend.labs = c("ID","IE","IE fibrotic"),
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days)")
+print(p1)
+```
+```{r}
+expr_human5 <- read_csv("~/Dog/GSE16091_expr.csv")
+expr_human5 <- as.data.frame(expr_human5)
+expr_human5 <- aggregate.data.frame(expr_human5[,2:ncol(expr_human5)], by = list(as.character(expr_human5[,1])), FUN = mean, na.rm = T)
+rownames(expr_human5) <- expr_human5[,1]
+expr_human5 <- expr_human5[,-1]
+
+set.seed(2425)
+cellprop_human5 <- t(MCPcounter.estimate(expression = expr_human5, featuresType = "HUGO_symbols", probesets = read.table("~/Dog/MCP_counter_markers.csv")))
+cellprop_human5 <- apply(cellprop_human5, 2, scale)
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_human5, centers = 3, nstart = 100, iter.max = 500)
+imm_clus5 <- rep("ID", nrow(cellprop_human5))
+imm_clus5[km.res$cluster == 3] <- "IE"
+imm_clus5[km.res$cluster == 2] <- "IE-ECM"
+#imm_clus3 <- factor(imm_clus3, levels = c("IE", "IE fibrotic", "ID"))
+Heatmap(cellprop_human5, row_split = imm_clus5, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")))
+names(imm_clus5) <- colnames(expr_human5)
+```
+```{r}
+human_clin5 <- read_delim("~/Dog/GSE16091_pheno.tsv", delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+human_clin5 <- as.data.frame(human_clin5)
+rownames(human_clin5) <- human_clin5$geo_accession
+#human_clin2 <- human_clin2[,-1]
+```
+
+```{r}
+human_clin5 <- human_clin5[names(imm_clus5),]
+human_clin5$immune_subtype <- as.character(imm_clus5)
+#human_clin3[human_clin3$`time until first recurrence or latest follow-up (months):ch1` > 0,]
+hc5 <- data.frame(OS_time = as.numeric(human_clin5$`days-followup:ch1`), OS_status = as.numeric(human_clin5$`alive-or-dead:ch1` == "D"),
+                 DFS_time = NA, DFS_status = NA,
+                 immune_subtype = human_clin5$immune_subtype, met_at_daig = NA,
+                 age = NA,
+                 gender = NA,
+                 necrosis = NA)
+
+#hc3 <- hc3[hc3$met_at_daig == "NON-METASTATIC",]
+surv <- survfit(Surv(OS_time, OS_status) ~ immune_subtype, data = hc5)
+diff <- survdiff(Surv(OS_time, OS_status) ~ immune_subtype, data = hc5)
+
+p1 <- ggsurvplot(surv, data = hc5,
+                  legend.title = "",
+                 legend = "right",
+                 #legend.labs = c("ID","IE","IE fibrotic"),
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days)")
+print(p1)
+```
+
+```{r}
+expr_human6 <- read_csv("~/Dog/GSE30699_expr.csv")
+human_clin6 <- read_delim("~/Dog/GSE30699_pheno.tsv", delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+expr_human6 <- as.data.frame(expr_human6)
+expr_human6 <- aggregate.data.frame(expr_human6[,2:ncol(expr_human6)], by = list(as.character(expr_human6[,1])), FUN = mean, na.rm = T)
+rownames(expr_human6) <- expr_human6[,1]
+expr_human6 <- expr_human6[,-1]
+expr_human6 <- expr_human6[, grepl("biopsy",human_clin6$source_name_ch1)]
+
+set.seed(2425)
+cellprop_human6 <- t(MCPcounter.estimate(expression = expr_human6, featuresType = "HUGO_symbols", probesets = read.table("~/Dog/MCP_counter_markers.csv")))
+cellprop_human6 <- apply(cellprop_human6, 2, scale)
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_human6, centers = 3, nstart = 100, iter.max = 500)
+imm_clus6 <- rep("ID", nrow(cellprop_human6))
+imm_clus6[km.res$cluster == 3] <- "IE"
+imm_clus6[km.res$cluster == 1] <- "IE-ECM"
+#imm_clus3 <- factor(imm_clus3, levels = c("IE", "IE fibrotic", "ID"))
+Heatmap(cellprop_human6, row_split = imm_clus6, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")))
+names(imm_clus6) <- colnames(expr_human6)
+
+hc6 <- data.frame(OS_time = NA, OS_status = NA,
+                 DFS_time = NA, DFS_status = NA,
+                 immune_subtype = imm_clus6, met_at_daig = NA,
+                 age = NA,
+                 gender =  NA,
+                 necrosis = NA)
+```
+```{r}
+expr_human7 <- read_csv("~/Dog/GSE32981_expr.csv")
+expr_human7 <- expr_human7[!is.na(expr_human7$Group.1),]
+expr_human7 <- as.data.frame(expr_human7)
+rownames(expr_human7) <- expr_human7$Group.1
+expr_human7 <- expr_human7[,-1]
+GSE32981_pheno <- read_delim("~/Dog/GSE32981_pheno.tsv", delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+
+set.seed(2425)
+cellprop_human7 <- t(MCPcounter.estimate(expression = expr_human7, featuresType = "HUGO_symbols", probesets = read.table("~/Dog/MCP_counter_markers.csv")))
+cellprop_human7 <- apply(cellprop_human7, 2, scale)
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_human7, centers = 3, nstart = 100, iter.max = 500)
+imm_clus7 <- rep("ID", nrow(cellprop_human7))
+imm_clus7[km.res$cluster == 1] <- "IE"
+imm_clus7[km.res$cluster == 3] <- "IE-ECM"
+#imm_clus3 <- factor(imm_clus3, levels = c("IE", "IE fibrotic", "ID"))
+Heatmap(cellprop_human7, row_split = imm_clus7, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")))
+names(imm_clus7) <- colnames(expr_human7)
+sample_type_7 <- c("Primary","Met")[as.numeric(GSE32981_pheno$`origin:ch1` == "Met")+1]
+treatment_stat7 <- c("naive","treated")[as.numeric(GSE32981_pheno$Treated == "Yes")+1]
+hc7 <- data.frame(OS_time = NA, OS_status = NA,
+                 DFS_time = as.numeric(GSE32981_pheno$MFS)*30, DFS_status = as.numeric(GSE32981_pheno$`developed metastases:ch1` == "Yes"),
+                 immune_subtype = imm_clus7, met_at_daig = as.numeric(GSE32981_pheno$MFS) == 0 & !is.na(as.numeric(GSE32981_pheno$MFS)),
+                 age = as.numeric(GSE32981_pheno$`age:ch1`),
+                 gender =  c("M","F")[as.numeric(GSE32981_pheno$`gender:ch1` == "Female")+1],
+                 necrosis = GSE32981_pheno$necrosis)
+hc7$met_at_daig <- c("NON-METASTATIC","METASTATIC")[as.numeric(hc7$met_at_daig & !is.na(hc7$met_at_daig)) +1]
+```
+
+
+```{r}
+hc4 <- rbind(rbind(hc,hc2),rbind(hc3,rbind(hc44,rbind(hc5,rbind(hc6,hc7)))))
+hc4$immune_subtype_1 <- imm_clus_all
+hc4$ml_class <- preds
+hc4 <- hc4[sample_type_bulk == "Primary",]
+#hc4$immune_subtype <- imm_clus_cc[c(rownames(human_clin), rownames(human_clin2), rownames(human_clin3))]
+
+#hc4 <- hc4[hc4$met_at_daig %in% c("NON-METASTATIC"),]
+#hc4 <- hc4[hc4$gender == "M",]
+
+surv <- survfit(Surv(OS_time, OS_status) ~ ml_class, data = hc4[!is.na(hc4$OS_time),])
+diff <- survdiff(Surv(OS_time, OS_status) ~ ml_class, data = hc4[!is.na(hc4$OS_time),])
+
+p1 <- ggsurvplot(surv, data = hc4[!is.na(hc4$OS_time),],
+                  
+                  legend.title = "",
+                 legend = "right",
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                 xlim = c(0,4500),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                 palette = c("#882255","#CC6677","#88CCEE"),
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days)")
+print(p1)
+ggsave(filename = "~/Dog/Human_OS_pred_primary.pdf", plot = p1$plot, width = 7, height = 4)
+
+
+surv <- survfit(Surv(DFS_time, DFS_status) ~ ml_class, data = hc4[!is.na(hc4$DFS_time),])
+diff <- survdiff(Surv(DFS_time, DFS_status) ~ ml_class, data = hc4[!is.na(hc4$DFS_time),])
+
+p1 <- ggsurvplot(surv, data = hc4[!is.na(hc4$DFS_time),],
+
+                  legend.title = "",
+                 legend = "right",
+                  conf.int = F,
+                  pval = TRUE,
+                  risk.table = TRUE,
+                  tables.height = 0.2,
+                  tables.theme = theme_cleantable(),
+                  risk.table.y.text = FALSE,
+                 pval.coord = c(0, 0.03),
+                 xlim = c(0,4500),
+                  # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+                  # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+                 palette = c("#882255","#CC6677","#88CCEE"),
+                  ggtheme = theme(text = element_text(size = 15)) +theme_bw() # Change ggplot2 theme
+) + xlab("Time (days)")
+print(p1)
+ggsave(filename = "~/Dog/Human_DFS_primary.pdf", plot = p1$plot, width = 7, height = 4)
+ggsave(p1$plot, filename = "~/Dog/aim3_human_DFS.pdf")
+```
+```{r}
+cph_dat <- data.frame(time = hc4$DFS_time,
+subtype = hc4$ml_class,
+status = hc4$DFS_status,
+stage = hc4$met_at_daig,
+gender = hc4$gender,
+age = scale(hc4$age, center = T, scale = T), necrosis = hc4$necrosis)
+cph_dat <- cph_dat[!is.na(cph_dat$necrosis) & !is.na(hc4$DFS_time),]
+cph_dat$subtype <- relevel(as.factor(cph_dat$subtype), ref = "ID")
+gender <- relevel(as.factor(cph_dat$gender), ref = "M")
+cph_dat$stage[cph_dat$stage == "NON-METASTATIC"] <- "LOCALIZED"
+cph_dat$stage <- relevel(as.factor(cph_dat$stage), ref = "LOCALIZED")
+cph_dat$predictor <- rep(3, nrow(cph_dat))
+cph_dat$predictor[cph_dat$subtype == "IE-ECM"] <- 2
+cph_dat$predictor[cph_dat$subtype == "IE"] <- 1
+
+fit <- coxph(Surv(time, status) ~ age + gender + stage + necrosis + predictor, data = cph_dat)
+p2 <-ggforest(fit, data = cph_dat,fontsize = 0.7, noDigits = 2) + theme(text = element_text(size = 25))
+print(p2)
+ggsave(plot = p2, filename = "~/Dog/human_cph_results.pdf", width = 5, height = 5)
+```
+
+```{r}
+ggplot(data = cc1[cc1$treatment == "SOC",], aes(y = age, x = immune_subtype)) + geom_boxplot() + xlab("TME subtype") + stat_compare_means(comparisons = my_comparisons, label.y = c(10, 15, 20), method = "wilcox.test") + ylab("Age (Dog years)") + labs(title = "N=92 canine OS patients, SOC")
+ggplot(data = cc1[cc1$treatment == "Rapamycin",], aes(y = age, x = immune_subtype)) + geom_boxplot() + xlab("TME subtype") + stat_compare_means(comparisons = my_comparisons, label.y = c(10, 15, 20), method = "wilcox.test") + ylab("Age (Dog years)") + labs(title = "N=92 canine OS patients, SOC + Sirolimus")
+cc1$sex <- c("CM/IM","SF/IF")[as.numeric(cc1$gender %in% c("Intact Female","Spayed Female"))+1]
+table(cc1$sex,cc1$immune_subtype)
+chisq.test(table(cc1$sex,cc1$immune_subtype))
+ggplot(data = hc4, aes(y = age, x = immune_subtype_1)) + geom_boxplot() + xlab("TME subtype") + stat_compare_means(comparisons = my_comparisons, label.y = c(29, 35, 40), method = "wilcox.test") + ylab("Age (Human years)") + labs(title = "N=261 Human OS patients")
+table(hc4$gender,hc4$immune_subtype_1)
+chisq.test(table(hc4$gender,hc4$immune_subtype_1))
+```
+
+```{r}
+expr_human4 <- read_csv("~/Dog/GSE33383_expr.csv")
+expr_human4 <- as.data.frame(expr_human4)
+expr_human4 <- aggregate.data.frame(expr_human4[,2:ncol(expr_human4)], by = list(as.character(expr_human4[,1])), FUN = mean, na.rm = T)
+rownames(expr_human4) <- expr_human4[,1]
+expr_human4 <- expr_human4[,-1]
+GSE33383_pheno <- read_delim("~/Dog/GSE33383_pheno.tsv", delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+expr_human4 <- expr_human4[,grepl("pre-chemotherapy biopsy", GSE33383_pheno$source_name_ch1)]
+GSE33383_pheno <-GSE33383_pheno[grepl("pre-chemotherapy biopsy", GSE33383_pheno$source_name_ch1),]
+#expr_human4 <- expr_human4[grepl("pre-chemotherapy biopsy", GSE33383_pheno$source_name_ch1),]
+```
+
+```{r}
+set.seed(2425)
+cellprop_human4 <- t(MCPcounter.estimate(expression = expr_human4, featuresType = "HUGO_symbols"))
+cellprop_human4 <- apply(cellprop_human4, 2, scale)
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_human4, centers = 3, nstart = 100, iter.max = 500)
+imm_clus4 <- rep("ID", nrow(cellprop_human4))
+imm_clus4[km.res$cluster == 1] <- "IE"
+imm_clus4[km.res$cluster == 3] <- "IE-ECM"
+imm_clus4 <- factor(imm_clus4, levels = c("IE", "IE-ECM", "ID"))
+ha = rowAnnotation(
+    met_within_5yrs = GSE33383_pheno$`metastasis within 5yrs:ch1`,
+    col = list("met_within_5yrs" = c("no" = "green", "yes" =  "yellow")
+    )
+)
+
+names(imm_clus4) <- colnames(expr_human4)
+
+hc44 <- data.frame(OS_time = NA, OS_status = NA,
+                 DFS_time = NA, DFS_status = NA,
+                 immune_subtype = imm_clus4, met_at_daig = rep("NON-METASTATIC", length(imm_clus4)),
+                 age = sapply(GSE33383_pheno$`age:ch1`, function(x) as.numeric(strsplit(x," ")[[1]][1])/12),
+                 gender =  c("M","F")[as.numeric(GSE33383_pheno$`gender:ch1` == "F")+1],
+                 necrosis = NA)
+
+ct <- colnames(cellprop_human4)
+cellprop_allhuman <- rbind(cellprop_human[,ct],rbind(cellprop_human2[,ct],rbind(cellprop_human3[,ct],rbind(cellprop_human4[,ct], rbind(cellprop_human5[,ct], rbind(cellprop_human6[,ct], cellprop_human7[,ct]))))))
+```
+```{r}
+Heatmap(cellprop_human4, row_split = imm_clus_all[names(imm_clus4)], cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#F8766D","#00BA38", "#619CFF")), left_annotation = ha)
+```
+
+```{r}
+set.seed(2425)
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_allhuman, centers = 3, nstart = 100, iter.max = 500)
+imm_clus_all <- rep("ID", nrow(cellprop_allhuman))
+imm_clus_all[km.res$cluster == 1] <- "IE"
+imm_clus_all[km.res$cluster == 3] <- "IE-ECM"
+imm_clus_all <- factor(imm_clus_all, levels = c("IE", "IE-ECM", "ID"))
+
+Heatmap(cellprop_allhuman, row_split = imm_clus_all, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#F8766D","#00BA38", "#619CFF")))
+```
+
+
+
+```{r}
+type1_interferon_signature <- function(expr) {
+  genes <- c("IFNA1", "IFNA2", "IFNA4", "IFNA5", "IFNA6", "IFNA7", "IFNA8", "IFNA10", "IFNA13", "IFNA14", "IFNA16", "IFNA17", "IFNA21", "IFNW1", "IFNE", "IFNK","IFNB1")
+    mat <- as.data.frame(expr)
+    mat <- mat[genes,]
+    mat <- apply(as.matrix(mat),1,scale)
+    scores <- rowMeans(mat, na.rm = T)
+    return(scores)
+}
+```
+
+
+```{r}
+
+ds <- c(rep("TARGET", length(imm_clus_target)), rep("GSE21257", length(imm_clus2)), rep("GSE39055", length(imm_clus3)), rep("GSE33383",length(imm_clus4)), rep("GSE16091",length(imm_clus5)), rep("GSE30699",length(imm_clus6)), rep("GSE32981", length(imm_clus7)))
+
+sample_type_bulk <- c(rep("Primary", length(imm_clus_target) + length(imm_clus2) + length(imm_clus3) + length(imm_clus4) + length(imm_clus5) + length(imm_clus6)), sample_type_7)
+sample_type_all <- c(sample_type_bulk,sc_sample_type)
+treatment_bulk <- c(rep("naive", length(imm_clus_target) + length(imm_clus2) + length(imm_clus3) + length(imm_clus4) + length(imm_clus5) + length(imm_clus6)), c("naive","post-chemo")[as.numeric(treatment_stat7 == "post-chemo")+1])
+treatment <- c(treatment_bulk, rep("post-chemo",length(sc_merged_subtypes)))
+platform = c(c("microarray","RNASeq")[as.numeric(ds == "TARGET")+1],rep("10x(scRNASeq)", length(sc_merged_subtypes)))
+ds <- c(ds, rep("GSE152048", length(sc_merged_subtypes)))
+
+ha = rowAnnotation(
+    dataset = ds,
+    platform = platform,
+    sample = sample_type_all,
+    treatment_status = treatment,
+    col = list("dataset" = c("TARGET" = "#AF32CD", "GSE21257" =  "cyan","GSE39055" = "#A35711", "GSE33383" = "magenta", "GSE16091" = "#4500B2","GSE30699" = "#BCFF96", "GSE152048" = "#FB4232","GSE32981" = "#6775CD"),
+               "platform" = c("microarray" = "#929292",
+                              "RNASeq" = "#E2E0E7",
+                              "10x(scRNASeq)" = "#3B3BFF"),
+               "sample" = c("Primary" = "yellow", "Met" = "darkgreen", "Recurrent" = "darkorange"),
+               "treatment_status" = c("naive" = "#EDAB32","post-chemo" = "#B30721"))
+    
+)
+Heatmap(rbind(cellprop_allhuman,cellprop_human_scOS[,c(1,3:10)]), row_split = c(preds,sc_merged_subtypes), cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")), right_annotation = ha)
+
+pdf("~/Dog/aim3_human.pdf", height = 18, width = 10)
+Heatmap(rbind(cellprop_allhuman,cellprop_human_scOS[,c(1,3:10)]), row_split = c(preds,sc_merged_subtypes), cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")), right_annotation = ha)
+dev.off()
+names(imm_clus_all) <- c(names(imm_clus_target),names(imm_clus2), names(imm_clus3), names(imm_clus4))
+CIN_1 <- CIN_signature(ee)
+CIN_2 <- CIN_signature(expr_human2)
+CIN_3 <- CIN_signature(expr_human3)
+CIN_4 <- CIN_signature(expr_human4)
+CIN_5 <- CIN_signature(expr_human5)
+CIN_6 <- CIN_signature(expr_human6)
+CIN_7 <- CIN_signature(expr_human7)
+CIN_8 <- CIN_signature(bulk_exp_scOS)
+CIN_all <- c(CIN_1,CIN_2,CIN_3,CIN_4, CIN_5, CIN_6, CIN_7, CIN_8)
+names(CIN_all) <- c(names(imm_clus_all), names(sc_merged_subtypes))
+p1 <- ggplot(data = data.frame(subtype = c(preds, sc_merged_subtypes), CIN_score = CIN_all), aes(x = subtype,y=CIN_score)) + geom_boxplot() +theme_bw() + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif")
+print(p1)
+ggsave(plot = p1, filename = "~/Dog/CIN_human.pdf", width = 4, height = 4)
+
+
+IN_1 <- type1_interferon_signature(ee)
+IN_2 <- type1_interferon_signature(expr_human2)
+IN_3 <- type1_interferon_signature(expr_human3)
+IN_4 <- type1_interferon_signature(expr_human4)
+IN_5 <- type1_interferon_signature(expr_human5)
+IN_6 <- type1_interferon_signature(expr_human6)
+IN_7 <- type1_interferon_signature(expr_human7)
+IN_8 <- type1_interferon_signature(bulk_exp_scOS)
+IN_all <- c(IN_1,IN_2,IN_3,IN_4, IN_5, IN_6, IN_7, IN_8)
+names(IN_all) <- c(names(imm_clus_all), names(sc_merged_subtypes))
+p1 <- ggplot(data = data.frame(subtype = c(preds, sc_merged_subtypes), IN_score = IN_all), aes(x = subtype,y=IN_score)) + geom_boxplot() +theme_bw() + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif")
+print(p1)
+ggsave(plot = p1, filename = "~/Dog/IN_human.pdf", width = 4, height = 4)
+```
+```{r}
+chkpoint_exp <- function(expr){
+  out <- t(log2(data.frame(expr)[c("PDCD1","CD274","CTLA4","TIGIT","LAG3","HAVCR2"),]+1))
+  colnames(out) <- c("PDCD1","CD274","CTLA4","TIGIT","LAG3","HAVCR2")
+  return(data.frame(apply(out,2,scale)))
+}
+```
+
+```{r}
+CP <- list()
+CP[[1]] <- chkpoint_exp(ee)
+CP[[2]] <- chkpoint_exp(expr_human2)
+CP[[3]] <- chkpoint_exp(expr_human3)
+CP[[4]] <- chkpoint_exp(expr_human4)
+CP[[5]] <- chkpoint_exp(expr_human5)
+CP[[6]] <- chkpoint_exp(expr_human6)
+CP[[7]] <- chkpoint_exp(expr_human7)
+CP[[8]] <- chkpoint_exp(bulk_exp_scOS)
+CP_all <- Reduce(rbind, CP)
+
+out <- data.frame(CP_all, subtype= c(preds, sc_merged_subtypes))
+out <- out[!is.na(rowSums(out[,1:6])),]
+dd_out <- melt(out, id.vars = "subtype")
+colnames(dd_out) <- c("subtype","ICI_target","scaled_expression")
+dd_out$ICI_target <- as.character(dd_out$ICI_target)
+dd_out$subtype <- factor(dd_out$subtype, levels = c("IE","IE-ECM","ID"))
+dd_out$ICI_target[dd_out$ICI_target == "PDCD1"] = "PD1"
+dd_out$ICI_target[dd_out$ICI_target == "CD274"] = "PDL1"
+dd_out$ICI_target[dd_out$ICI_target == "HAVCR2"] = "TIM3"
+#p1 <- ggplot(dd_out, aes(x = subtype, y = log2TPM)) +
+#  facet_wrap(~ICI_target, scales = "free_y") + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + theme_bw() + theme(text = element_text(size = 15)) + xlab("ICI target") + ylab("expression (log2(TPM)")
+
+p1 <- ggboxplot(dd_out, x = "subtype", y="scaled_expression", facet.by = "ICI_target") + theme_bw() + theme(text = element_text(size = 15)) + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + xlab("") + ylab("normalized expression")
+print(p1)
+
+ggsave(plot = p1,filename = "~/Dog/human_immune_checkpoints.pdf", width = 6, height = 8)
+```
+```{r}
+dd_rnaseq <- data.frame(cellprop_rnaseq[,c(1:10)], subtype = imm_clus)
+dd_rnaseq <- melt(dd_rnaseq, id.vars = "subtype")
+p1 <- ggboxplot(dd_rnaseq, x = "subtype", y="value", facet.by = "variable",) + theme_bw() + theme(text = element_text(size = 15)) + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + xlab("") + ylab("MCP counter score (normalized)")
+print(p1)
+ggsave(plot = p1, filename = "~/Dog/caninernaseq_mcpcounter_boxplots.pdf", width = 14, height = 9)
+
+dd_rnaseq <- data.frame(cellprop_nano[,c(1:10)], subtype = imm_clus_nano)
+dd_rnaseq <- melt(dd_rnaseq, id.vars = "subtype")
+p1 <- ggboxplot(dd_rnaseq, x = "subtype", y="value", facet.by = "variable") + theme_bw() + theme(text = element_text(size = 15)) + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + xlab("") + ylab("MCP counter score (normalized)")
+print(p1)
+ggsave(plot = p1, filename = "~/Dog/caninenano_mcpcounter_boxplots.pdf", width = 14, height = 9)
+
+dd_rnaseq <- data.frame(rbind(cellprop_rnaseq[,c(1,3:10)],cellprop_nano[,c(1,3:10)]), subtype = c(imm_clus,imm_clus_nano))
+dd_rnaseq <- melt(dd_rnaseq, id.vars = "subtype")
+p1 <- ggboxplot(dd_rnaseq, x = "subtype", y="value", facet.by = "variable") + theme_bw() + theme(text = element_text(size = 15)) + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + xlab("") + ylab("MCP counter score (normalized)")
+print(p1)
+ggsave(plot = p1, filename = "~/Dog/allcanine_mcpcounter_boxplots.pdf", width = 11, height = 9)
+dd_rnaseq <- data.frame(rbind(cellprop_allhuman), subtype = preds)
+dd_rnaseq <- melt(dd_rnaseq, id.vars = "subtype")
+p1 <- ggboxplot(dd_rnaseq, x = "subtype", y="value", facet.by = "variable") + theme_bw() + theme(text = element_text(size = 15)) + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + xlab("") + ylab("MCP counter score (normalized)")
+print(p1)
+ggsave(plot = p1, filename = "~/Dog/allhuman_mcpcounter_boxplots.pdf", width = 11, height = 9)
+```
+
+```{r}
+library(Seurat)
+library(DoubletFinder)
+dirs <- c("BC2","BC3","BC5","BC6","BC10","BC11","BC16","BC17","BC20","BC21","BC22")
+scOS <- list()
+for(dir in dirs){
+  print(dir)
+  strt = Sys.time()
+  data_dir <- paste("~/Dog/",dir, sep = "")
+  expression_matrix <- Read10X(data.dir = data_dir)
+  seurat_object = CreateSeuratObject(counts = expression_matrix, project = dir)
+  seurat_object <- PercentageFeatureSet(seurat_object, "^MT-", col.name = "percent_mito")
+  selected_c <- WhichCells(seurat_object, expression = nFeature_RNA > 300)
+  selected_mito <- WhichCells(seurat_object, expression = percent_mito < 10)
+  data.filt <- subset(seurat_object, cells = intersect(selected_mito, selected_c))
+  
+  data.filt = NormalizeData(data.filt)
+  data.filt = FindVariableFeatures(data.filt, verbose = F)
+  data.filt = ScaleData(data.filt, vars.to.regress = c("nFeature_RNA", "percent_mito"),
+    verbose = F)
+  data.filt = RunPCA(data.filt, verbose = F, npcs = 20)
+  data.filt = RunUMAP(data.filt, dims = 1:10, verbose = F)
+  nExp <- round(ncol(data.filt) * 0.04)  # expect 4% doublets
+  data.filt <- doubletFinder_v3(data.filt, pN = 0.25, pK = 0.09, nExp = nExp, PCs = 1:10)
+  DF.name = colnames(data.filt@meta.data)[grepl("DF.classification", colnames(data.filt@meta.data))]
+  data.filt <- data.filt[, data.filt@meta.data[, DF.name] == "Singlet"]
+  scOS[[dir]] <- data.filt
+  print(Sys.time() - strt)
+}
+
+
+
+```
+
+```{r}
+#bulk_exp_scOS <- sapply(scOS, function(x) rowMeans(GetAssayData(x)))
+bulk_exp_scOS <- read_csv("~/Dog/GSE152048_merged_expr.csv")
+bulk_exp_scOS <- as.data.frame(bulk_exp_scOS)
+rownames(bulk_exp_scOS) <- bulk_exp_scOS$...1
+bulk_exp_scOS <- bulk_exp_scOS[,-1]
+cellprop_human_scOS <- t(MCPcounter.estimate(expression = bulk_exp_scOS, featuresType = "HUGO_symbols", probesets = read.table("~/Dog/MCP_counter_markers.csv")))
+cellprop_human_scOS <- apply(cellprop_human_scOS, 2, scale)
+newcolnames <- sapply(colnames(cellprop_human_scOS), function(x) gsub(" ","_",x))
+names(newcolnames) <- NULL
+colnames(cellprop_human_scOS) <- newcolnames
+```
+```{r}
+sc_merged_subtypes <- predict(nb, cellprop_human_scOS[, colnames(human_test)[1:9]])
+rownames(cellprop_human_scOS) <- colnames(bulk_exp_scOS)
+Heatmap(cellprop_human_scOS, row_split = sc_merged_subtypes, cluster_columns = F, cluster_row_slices = F, row_gap = unit(1, "mm"), row_title_gp = gpar(col = c("#F8766D","#00BA38", "#619CFF")))
+names(sc_merged_subtypes) <- colnames(bulk_exp_scOS)
+
+```
+
+```{r}
+human_OS_sc_celltypes <- read_excel("~/Dog/sourcedat_human_OS_singlecell.xlsx", sheet = "Figure S5a", skip = 2)
+human_OS_sc_celltypes$...1 <- sapply(human_OS_sc_celltypes$...1, function(x) strsplit(x,split = "\\.")[[1]][2])
+human_OS_sc_celltypes <- human_OS_sc_celltypes[!is.na(human_OS_sc_celltypes$...1),]
+names(human_OS_sc_celltypes$...1) <- NULL
+human_OS_sc_celltypes <- as.data.frame(human_OS_sc_celltypes)
+rownames(human_OS_sc_celltypes) <- human_OS_sc_celltypes$...1
+human_OS_sc_celltypes <- human_OS_sc_celltypes[,-1]
+human_OS_sc_celltypes <- as.data.frame(t(human_OS_sc_celltypes))
+
+scOS_cancercell <- read_excel("~/Dog/sourcedat_human_OS_singlecell.xlsx", sheet = "Figure S6b", skip = 2)
+scOS_cancercell <- as.data.frame(scOS_cancercell)
+rownames(scOS_cancercell) <- scOS_cancercell$...1
+scOS_cancercell <- scOS_cancercell[,-1]
+scOS_cancercell <- as.data.frame(scOS_cancercell[rownames(human_OS_sc_celltypes),])
+
+
+scOS_chondro <- read_excel("~/Dog/sourcedat_human_OS_singlecell.xlsx", sheet = "Figure S6g", skip = 1)
+scOS_chondro <- as.data.frame(scOS_chondro)
+rownames(scOS_chondro) <- scOS_chondro$Patient
+scOS_chondro <- scOS_chondro[,-1]
+scOS_chondro <- scOS_chondro[,-5]
+scOS_chondro <- as.data.frame(scOS_chondro[rownames(human_OS_sc_celltypes),])
+
+
+scOS_osteoclast <- read_excel("~/Dog/sourcedat_human_OS_singlecell.xlsx", sheet = "Figure S11c", skip = 1)
+scOS_osteoclast <- as.data.frame(scOS_osteoclast)
+rownames(scOS_osteoclast) <- scOS_osteoclast$`Cell type`
+scOS_osteoclast <- scOS_osteoclast[,-1]
+scOS_osteoclast <- t(scOS_osteoclast)
+scOS_osteoclast <- as.data.frame(scOS_osteoclast[rownames(human_OS_sc_celltypes),])
+
+scOS_MSC <- read_excel("~/Dog/sourcedat_human_OS_singlecell.xlsx", sheet = "Figure S14a", skip = 1)
+scOS_MSC <- as.data.frame(scOS_MSC)
+rownames(scOS_MSC) <- scOS_MSC$`Cell type`
+scOS_MSC<- scOS_MSC[,-1]
+scOS_MSC <- t(scOS_MSC)
+scOS_MSC <- as.data.frame(scOS_MSC[rownames(human_OS_sc_celltypes),])
+
+scOS_CAF <- read_excel("~/Dog/sourcedat_human_OS_singlecell.xlsx", sheet = "Figure S14d", skip = 1)
+scOS_CAF <- as.data.frame(scOS_CAF)
+rownames(scOS_CAF) <- scOS_CAF$`Cell type`
+scOS_CAF <- scOS_CAF[,-1]
+scOS_CAF <- t(scOS_CAF)
+scOS_CAF <- as.data.frame(scOS_CAF[rownames(human_OS_sc_celltypes),])
+
+scOS_Myeloid <- read_excel("~/Dog/sourcedat_human_OS_singlecell.xlsx", sheet = "Figure S15b", skip = 1)
+scOS_Myeloid <- as.data.frame(scOS_Myeloid)
+rownames(scOS_Myeloid) <- scOS_Myeloid$`Cell type`
+scOS_Myeloid <- scOS_Myeloid[,-1]
+scOS_Myeloid <- t(scOS_Myeloid)
+scOS_Myeloid <- as.data.frame(scOS_Myeloid[rownames(human_OS_sc_celltypes),])
+
+
+scOS_TIL <- read_excel("~/Dog/sourcedat_human_OS_singlecell.xlsx", sheet = "Figure S16b", skip = 1)
+scOS_TIL <- as.data.frame(scOS_TIL)
+rownames(scOS_TIL) <- scOS_TIL$Patient
+scOS_TIL <- scOS_TIL[,-1]
+scOS_TIL <- as.data.frame(scOS_TIL[rownames(human_OS_sc_celltypes),])
+
+
+total <- rowSums(human_OS_sc_celltypes)
+scOS_cancercell$Osteoblastic_1 <- scOS_cancercell$Osteoblastic_1/total
+scOS_cancercell$Osteoblastic_2 <- scOS_cancercell$Osteoblastic_2/total
+scOS_cancercell$Osteoblastic_3 <- scOS_cancercell$Osteoblastic_3/total
+scOS_cancercell$Osteoblastic_4 <- scOS_cancercell$Osteoblastic_4/total
+scOS_cancercell$Osteoblastic_5 <- scOS_cancercell$Osteoblastic_5/total
+scOS_cancercell$Osteoblastic_6 <- scOS_cancercell$Osteoblastic_6/total
+
+scOS_cancercell$`Chondroblastic OS` <- scOS_cancercell$`Chondroblastic OS`/total
+scOS_chondro$Chondro_Proli <- scOS_chondro$Chondro_Proli/total
+scOS_chondro$Chondro_hyper_1 <- scOS_chondro$Chondro_hyper_1/total
+scOS_chondro$Chondro_hyper_2 <- scOS_chondro$Chondro_hyper_2/total
+scOS_chondro$Chondro_trans_diff <- scOS_chondro$Chondro_trans_diff/total
+
+scOS_osteoclast$OC_progenitor <- scOS_osteoclast$OC_progenitor/total
+scOS_osteoclast$OC_immature <- scOS_osteoclast$OC_immature/total
+scOS_osteoclast$OC_mature <- scOS_osteoclast$OC_mature/total
+
+scOS_CAF$`COL14A1+ fibroblast` <- scOS_CAF$`COL14A1+ fibroblast` / total
+scOS_CAF$`Smooth muscle cell` <- scOS_CAF$`Smooth muscle cell` / total
+scOS_CAF$Myofibroblast <- scOS_CAF$Myofibroblast / total
+
+scOS_MSC$`NT5E+MSC` <- scOS_MSC$`NT5E+MSC` / total
+scOS_MSC$`WISP2+MSC` <- scOS_MSC$`WISP2+MSC` / total
+scOS_MSC$`CLEC11A+MSC` <- scOS_MSC$`CLEC11A+MSC` / total
+
+scOS_Myeloid$`CD14+_monocytes` <- scOS_Myeloid$`CD14+_monocytes` / total
+scOS_Myeloid$`CXCL8+_monocytes` <- scOS_Myeloid$`CXCL8+_monocytes` / total
+scOS_Myeloid$M2_TAM <- scOS_Myeloid$M2_TAM / total
+scOS_Myeloid$M1_macrophage <- scOS_Myeloid$M1_macrophage / total
+scOS_Myeloid$`FABP4+_macrophage` <- scOS_Myeloid$`FABP4+_macrophage` / total
+scOS_Myeloid$Neutrophil <- scOS_Myeloid$Neutrophil / total
+scOS_Myeloid$`CD14+/CD163+_DC` <- scOS_Myeloid$`CD14+/CD163+_DC` / total
+scOS_Myeloid$`CD1C+_DC` <- scOS_Myeloid$`CD1C+_DC` / total
+scOS_Myeloid$`CD141+/CLEC9A+_DC` <- scOS_Myeloid$`CD141+/CLEC9A+_DC` / total
+
+scOS_TIL$`CD4+T` <- scOS_TIL$`CD4+T` / total
+scOS_TIL$`CD4-/CD8-` <- scOS_TIL$`CD4-/CD8-` / total
+scOS_TIL$`T-reg` <- scOS_TIL$`T-reg` / total
+scOS_TIL$`CXCL13+T` <- scOS_TIL$`CXCL13+T` / total
+scOS_TIL$`CD8+T` <- scOS_TIL$`CD8+T` / total
+scOS_TIL$NKT <- scOS_TIL$NKT / total
+scOS_TIL$NK <- scOS_TIL$NK / total
+scOS_TIL$B_cell <- scOS_TIL$B_cell / total
+scOS_TIL$`Proliferating T` <- scOS_TIL$`Proliferating T` / total
+
+
+```
+
+```{r}
+scOS_detailed <- list()
+scOS_detailed[[1]] <- scOS_cancercell
+scOS_detailed[[2]] <- scOS_chondro
+scOS_detailed[[3]] <- scOS_osteoclast
+scOS_detailed[[4]] <- scOS_TIL
+scOS_detailed[[5]] <- scOS_Myeloid
+scOS_detailed[[6]] <- scOS_CAF
+scOS_detailed[[7]] <- data.frame(Pericytes = human_OS_sc_celltypes$Pericytes) / total
+scOS_detailed[[8]] <- scOS_MSC
+scOS_detailed[[9]] <- data.frame(Myoblast = human_OS_sc_celltypes$Myoblast) / total
+scOS_detailed[[10]] <- data.frame(Endothelial = human_OS_sc_celltypes$Endothelial) / total
+
+scOS_detailed_all <- cbind(scOS_detailed[[1]], scOS_detailed[[2]],
+                           scOS_detailed[[3]], scOS_detailed[[4]],
+                           scOS_detailed[[5]], scOS_detailed[[6]],
+                           scOS_detailed[[7]], scOS_detailed[[8]],
+                           scOS_detailed[[9]], scOS_detailed[[10]])
+
+
+sc_sample_type <- c("Primary","Primary","Primary","Primary","Met","Recurrent","Primary","Primary","Met","Recurrent","Primary")
+``` 
+
+```{r}
+ha = rowAnnotation(
+    sample = sc_sample_type,
+    subtype = sc_merged_subtypes,
+    col = list("sample" = c("Primary" = "yellow", "Met" =  "darkgreen", "Recurrent" = "orange"),
+               "subtype" = c("IE" = "#882255", "IE-ECM" =  "#CC6677", "ID" = "#88CCEE")
+    )
+)
+
+aa <- apply(scOS_detailed_all[names(sc_merged_subtypes),],2,scale)
+rownames(aa) <- names(sc_merged_subtypes)
+
+p1 <- Heatmap(aa, row_split = sc_merged_subtypes, cluster_columns = F, cluster_row_slices = F, cluster_rows = F, row_gap = unit(1, "mm"), row_title_gp = gpar(col = c("#F8766D","#00BA38", "#619CFF")), right_annotation = ha)
+print(p1)
+
+pdf("~/Dog/scOS_heatmap_extended.pdf", width = 12, height = 7)
+print(p1)
+dev.off()
+
+
+
+aa <- human_OS_sc_celltypes[names(sc_merged_subtypes),]
+aa <- human_OS_sc_celltypes[names(sc_merged_subtypes),]/rowSums(human_OS_sc_celltypes[names(sc_merged_subtypes),])
+aa <- apply(aa,2,scale)
+rownames(aa) <- names(sc_merged_subtypes)
+Heatmap(aa, row_split = sc_merged_subtypes, cluster_columns = F, cluster_row_slices = F, cluster_rows = F,row_gap = unit(1, "mm"), row_title_gp = gpar(col = c("#F8766D","#00BA38", "#619CFF")), right_annotation = ha)
+
+pdf("~/Dog/scOS_heatmap.pdf")
+Heatmap(aa, row_split = sc_merged_subtypes, cluster_columns = F, cluster_row_slices = F, cluster_rows = F,row_gap = unit(1, "mm"), row_title_gp = gpar(col = c("#F8766D","#00BA38", "#619CFF")), right_annotation = ha)
+dev.off()
+```
+```{r}
+dd_rnaseq <- data.frame(scOS_detailed_all[names(sc_merged_subtypes),], subtype = sc_merged_subtypes)
+dd_rnaseq <- melt(dd_rnaseq, id.vars = "subtype")
+p1 <- ggboxplot(dd_rnaseq, x = "subtype", y="value", facet.by = "variable") + theme_bw() + theme(text = element_text(size = 15)) + stat_compare_means(comparisons = list(c("IE","IE-ECM"),c("IE-ECM","ID"),c("IE","ID")), method = "wilcox", label = "p.signif") + xlab("") + ylab("proportions")
+print(p1)
+```
+
+```{r}
+pp <- as.character(preds)
+names(pp)<- names(imm_clus_all)
+dd_m <- as.matrix(table(pp[names(imm_clus4)][!is.na(GSE33383_pheno$`metastasis within 5yrs:ch1`)], GSE33383_pheno$`metastasis within 5yrs:ch1`[!is.na(GSE33383_pheno$`metastasis within 5yrs:ch1`)]))
+dd_m <- (dd_m/rowSums(dd_m))*100
+dd_m <- melt(dd_m)
+colnames(dd_m) <- c("subtype","mets_within_5yrs","percentage")
+dd_m$subtype <- factor(dd_m$subtype,levels = c("IE","IE-ECM","ID"))
+p1 <- ggplot(as.data.frame(dd_m), aes(fill = mets_within_5yrs,
+                      y = percentage, x = subtype))+
+geom_bar(position = "fill", stat = "identity")+
+ggtitle("Metastasis rates")+
+theme(plot.title = element_text(hjust = 0.5)) + theme_bw()
+
+print(p1)
+ggsave(filename = "~/Dog/Human_5yr_mets.pdf", plot = p1, width = 5, height = 4)
+```
+
+
+```{r}
+chisq.test(table(pp[names(imm_clus4)][!is.na(GSE33383_pheno$`metastasis within 5yrs:ch1`)], GSE33383_pheno$`metastasis within 5yrs:ch1`[!is.na(GSE33383_pheno$`metastasis within 5yrs:ch1`)]))
+```
+
+```{r}
+hm <- melt(table(hc$immune_subtype, hc$met_at_daig))
+colnames(hm) <- c("immune_subtype","metastatis_at_diagnosis","freq")
+
+pp <-ggplot(data = hm,
+       aes(axis1 = immune_subtype, axis2 = metastatis_at_diagnosis, y = freq)) +
+  geom_alluvium(aes(fill = metastatis_at_diagnosis)) +
+  geom_stratum() +
+  geom_text(stat = "stratum",
+            aes(label = after_stat(stratum))) +
+  theme_void()
+
+print(pp)
+chisq_test(table(hc$immune_subtype, hc$met_at_daig))
+```
+
+```{r}
+wss <- function(k) {
+  kmeans(cellprop_rnaseq, k, nstart = 100 , iter.max = 500)$tot.withinss
+}
+
+# Compute and plot wss for k = 1 to k = 15
+k.values <- 1:15
+
+# extract wss for 2-15 clusters
+wss_values <- sapply(k.values, wss)
+
+plot(k.values, wss_values,
+       type="b", pch = 19, frame = FALSE, 
+       xlab="Number of clusters K",
+       ylab="Total within-clusters sum of squares")
+```
+```{r}
+library(mclust)
+d_clust <- Mclust(as.matrix(cellprop_primary2), G=1:15, modelNames = mclust.options("emModelNames"))
+plot(d_clust)
+```
+
+
+```{r}
+library(readxl)
+OS_single_cell <- read_excel("~/Dog/OS_single cell.xlsx")
+OS_single_cell <- as.data.frame(OS_single_cell)
+rownames(OS_single_cell) <- OS_single_cell$`Cell cluster`
+OS_single_cell <- OS_single_cell[,-1]
+OS_single_cell <- t(as.matrix(OS_single_cell))
+```
+
+```{r}
+set.seed(2425)
+#cellprop_human3 <- t(MCPcounter.estimate(expression = expr_human2, featuresType = "HUGO_symbols"))
+cellprop_human3 <- apply(OS_single_cell, 2, scale)
+#rownames(cellprop_primary) <- colnames(Canine_RNA_SEQ_TPM_All_data)
+km.res <- kmeans(cellprop_human3, centers = 3, nstart = 100, iter.max = 500)
+imm_clus3 <- rep("ID", nrow(cellprop_human3))
+imm_clus3[km.res$cluster == 2] <- "IE"
+imm_clus3[km.res$cluster == 3] <- "IE fibrotic"
+imm_clus3 <- factor(imm_clus3, levels = c("IE", "IE fibrotic", "ID"))
+Heatmap(cellprop_human3, row_split = imm_clus3, cluster_columns = F, cluster_row_slices = F, row_gap = unit(5, "mm"), row_title_gp = gpar(col = c("#00BA38", "#619CFF","#F8766D")))
+names(imm_clus3) <- rownames(OS_single_cell)
+```
+
+
+```{r}
+dirs <- list.dirs("~/TARGET", recursive = F)
+cnv_dats <- lapply(dirs, function(x) {
+  fname <- list.files(x, pattern = "*.tsv")[[1]]
+  dat <- read_table(paste(x,"/",fname,sep = ""))
+  return(as.data.frame(dat))
+})
+```
+
+```{r}
+file_names <- sapply(dirs, function(x) {
+  fname <- list.files(x, pattern = "*.tsv")[[1]]
+  return(gsub("\\.tsv","",fname))
+})
+names(file_names) <- NULL
+```
+
+```{r}
+library(biomaRt)
+
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Only use standard human chromosomes
+normal.chroms <- c(1:22, "X", "Y", "M")
+
+# Filter on HGNC symbol and chromosome, retrieve genomic location and band
+my.symbols <- cnv_dats[[1]]$gene_name
+
+my.regions <- getBM(c("hgnc_symbol", "chromosome_name", "start_position", "end_position", "band"),
+                    filters = c("hgnc_symbol", "chromosome_name"),
+                    values = list(hgnc_symbol=my.symbols, chromosome_name=normal.chroms),
+                                  mart = ensembl)
+```
+
+```{r}
+ploidy <- sapply(cnv_dats, function(x) median(x$copy_number, na.rm = T))
+gene_cnvs <- sapply(1:length(cnv_dats), function(i) {
+  relative_cnv <- log2((cnv_dats[[i]]$copy_number/ploidy[i]) + 1e-3)
+  return(relative_cnv)
+})
+rownames(gene_cnvs) <- cnv_dats[[1]]$gene_name
+my.regions$arms <- sapply(1:nrow(my.regions), function(j) paste(my.regions$chromosome_name[j],substr(my.regions$band[j],1,1), sep = ""))
+
+raw_cnvs <-sapply(1:length(cnv_dats), function(i) { cnv_dats[[i]]$copy_number})
+rownames(raw_cnvs) <- cnv_dats[[i]]$gene_name
+arm_cnvs <- aggregate.data.frame(as.data.frame(raw_cnvs[my.regions$hgnc_symbol, ]), by = list(my.regions$arms), FUN=median, na.rm=T)
+rownames(arm_cnvs) <- arm_cnvs$Group.1
+arm_cnvs <- arm_cnvs[,-1]
+arm_cnvs <- arm_cnvs[!is.na(rowSums(arm_cnvs)),]
+arm_cnvs <- arm_cnvs[-c(40:43),]
+arms <- rownames(arm_cnvs)
+arm_cnvs <- sapply(1:length(ploidy), function(i) log2(arm_cnvs[,i]/ploidy[i]))
+rownames(arm_cnvs) <- arms
+chr <- sapply(arms, function(x) as.numeric(gsub("p|q","",x)))
+arm_cnvs <- arm_cnvs[names(chr)[order(chr)],]
+
+
+
+```
+
+```{r}
+library(readr)
+library(rjson)
+target_gdc_clinical <- read_delim("~/Dog/clinical.cases_selection.2022-09-05/clinical.tsv", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE)
+target_json <- fromJSON(file = "~/Dog/files.2022-09-05.json", simplify = T)
+dd_target <- data.frame(case_id = sapply(target_json, function(x) x$cases[[1]]$case_id),
+file_name = sapply(target_json, function(x) x$file_name), stringsAsFactors = F)
+rownames(dd_target) <- dd_target$file_name
+dd_target <- dd_target[file_names,]
+case_ids <- dd_target$case_id
+target_gdc_clinical <- as.data.frame(target_gdc_clinical)
+rownames(target_gdc_clinical) <- target_gdc_clinical$case_id
+target_gdc_clinical <- target_gdc_clinical[case_ids,]
+dd_target$patient_id <- target_gdc_clinical$case_submitter_id
+
+```
+```{r}
+colnames(gene_cnvs) <- dd_target$patient_id
+colnames(arm_cnvs) <- dd_target$patient_id
+```
+
+```{r}
+library(readr)
+drivers <- read_csv("~/NoamCCT/data/drivers.csv")
+```
+
+```{r}
+driver_cnvs <- gene_cnvs[intersect(onco_ts$Gene, rownames(gene_cnvs)),]
+```
+
+```{r}
+km.res <- kmeans(t(arm_cnvs[,names(imm_clus_cnv)]), centers = 3, nstart = 100, iter.max = 500)
+
+aacnv <- matrix(0, nrow = nrow(arm_cnvs), ncol(arm_cnvs))
+aacnv[which(arm_cnvs > 0.3, arr.ind = T)] <- 1
+aacnv[which(arm_cnvs < -0.3, arr.ind = T)] <- -1
+rownames(aacnv) <- rownames(arm_cnvs)
+colnames(aacnv) <- colnames(arm_cnvs)
+#aacnv <- arm_cnvs
+Heatmap(t(aacnv[,names(imm_clus_cnv)]), row_split = imm_clus_cnv, cluster_columns = F)
+```
+```{r}
+aacnv <- aacnv[,common]
+aacnv_clus <- Reduce(cbind, lapply(c("IE","IE fibrotic","ID"), function(x) return(rowMeans(aacnv[,imm_clus_cnv == x], na.rm = T))))
+```
+
+```{r}
+colnames(aacnv_clus) <- c("IE","IE fibrotic","ID")
+Heatmap(aacnv_clus,  cluster_columns = F, cluster_rows = F)
+```
+
+```{r}
+names(imm_clus_all) <- sapply(names(imm_clus_all), function(x) substr(x,1,16))
+common <- intersect(colnames(gene_cnvs), names(imm_clus_all))
+imm_clus_cnv <- imm_clus_all[common]
+
+```
+
+```{r}
+library(e1071)
+driver_cnvs2 <- matrix(0, nrow = ncol(driver_cnvs), ncol = nrow(driver_cnvs))
+driver_cnvs2[which(t(driver_cnvs) > 0.3, arr.ind = T)] = 1
+driver_cnvs2[which(t(driver_cnvs) < -0.3, arr.ind = T)] = -1
+#driver_cnvs2 <- t(driver_cnvs)
+colnames(driver_cnvs2) <- rownames(driver_cnvs)
+rownames(driver_cnvs2) <- colnames(driver_cnvs)
+#km.res <- kmeans(driver_cnvs2, centers = 3, nstart = 100, iter.max = 500)
+distMat <- dist(driver_cnvs2,method = "manhattan")
+hr <- hclust(distMat, method="complete")
+cls = dendextend::cutree(hr, k=2)
+Heatmap(driver_cnvs2[common,], row_split =imm_clus_cnv,column_names_gp = gpar(fontsize = 8))
+```
+
+
+```{r}
+onco_ts <- read_excel("~/Dog/1-s2.0-S009286741830237X-mmc1.xlsx", sheet = "Table S1", skip = 2)
+onco_ts$status <- rep(NA, nrow(onco_ts))
+onco_ts$status[grepl("oncogene", onco_ts$`Tumor suppressor or oncogene prediction (by 20/20+)`, ignore.case = T)] <-  "Oncogene"
+onco_ts$status[grepl("tsg", onco_ts$`Tumor suppressor or oncogene prediction (by 20/20+)`, ignore.case = T)] <-  "Tumor suppressor"
+onco_ts$status[is.na(onco_ts$status)] <- "Unkown" 
+```
+
+
+```{r}
+driver_cnvs2 <- matrix(0, nrow = nrow(gene_cnvs), ncol = length(common))
+driver_cnvs2[which(gene_cnvs[,common] > 0.3, arr.ind = T)] = 1
+driver_cnvs2[which(gene_cnvs[,common] < -0.3, arr.ind = T)] = -1
+rownames(driver_cnvs2) <- rownames(gene_cnvs)
+strt <- Sys.time()
+drivers_imm_de <- t(sapply(1:nrow(driver_cnvs2), function(i) {
+  ct <- table(as.numeric(driver_cnvs2[i,] < 0), as.numeric(imm_clus_cnv %in% c("IE")))
+  tryCatch({
+  
+  ctm <- as.matrix(ct)
+  ctm[which(ctm == 0, arr.ind = T)] <- 1
+  ft <- suppressWarnings(fisher.test(ct))
+  estimate <- (ctm[1,1] * ctm[2,2])/(ctm[2,1]*ctm[1,2])
+  return(c(estimate, ft$p.value))
+  }, error = function(cond){return(c(NA,NA))})
+  
+}))
+print(Sys.time()-strt)
+rownames(drivers_imm_de) <- rownames(driver_cnvs2)
+drivers_imm_de <- drivers_imm_de[!is.na(drivers_imm_de[,1]) & !is.infinite(drivers_imm_de[,1]),]
+D_IE <- drivers_imm_de[intersect(onco_ts$Gene, rownames(drivers_imm_de)),]
+```
+```{r}
+aucs_IE <- sapply(intersect(onco_ts$Gene, rownames(gene_cnvs)), function(x) auc(imm_clus_cnv[common]=="IE",gene_cnvs[x,common], direction =">"))
+```
+```{r}
+pathways <- read_csv("~/NoamCCT/data/pathways.csv")
+
+pathways_cnv <- sapply(1:ncol(pathways), function(i) {
+  genes <- intersect(rownames(driver_cnvs2), pathways[[i]][!is.na(pathways[[i]])])
+  if(length(genes) > 1){
+  return(as.numeric((colSums(driver_cnvs2[genes,] < 0,na.rm = T)/length(genes))))  
+  }
+  else{
+    return(as.numeric(((driver_cnvs2[genes,] < 0)/length(genes))))
+  }
+  
+   
+})
+pathways_cnv <- t(pathways_cnv)
+rownames(pathways_cnv) <- colnames(pathways)
+```
+
+```{r}
+imm_clus_cnv <- factor(imm_clus_cnv, levels = c("IE", "IE fibrotic", "ID"))
+Heatmap(t(pathways_cnv), row_split =imm_clus_cnv, cluster_columns = T)
+```
+
+```{r}
+imm_clus_cnv <- factor(imm_clus_cnv, levels = c("IE", "IE fibrotic", "ID"))
+Heatmap(t(pathways_cnv), row_split =imm_clus_cnv, cluster_columns = F)
+```
+
+```{r}
+common <- intersect(colnames(gene_cnvs), names(imm_clus))
+imm_clus_cnv <- imm_clus[common]
+driver_cnvs2 <- matrix(0, nrow = nrow(gene_cnvs), ncol = length(common))
+driver_cnvs2[which(gene_cnvs[,common] > 2, arr.ind = T)] = 1
+driver_cnvs2[which(gene_cnvs[,common] < -2, arr.ind = T)] = -1
+rownames(driver_cnvs2) <- rownames(gene_cnvs)
+strt <- Sys.time()
+drivers_imm_de2 <- t(sapply(1:nrow(driver_cnvs2), function(i) {
+  ct <- table(as.numeric(driver_cnvs2[i,] > 0), as.numeric(imm_clus_cnv == "ID"))
+  tryCatch({
+  
+  ctm <- as.matrix(ct)
+  ctm[which(ctm == 0, arr.ind = T)] <- 1
+  ft <- suppressWarnings(fisher.test(ct))
+  estimate <- (ctm[1,1] * ctm[2,2])/(ctm[2,1]*ctm[1,2])
+  return(c(estimate, ft$p.value))
+  }, error = function(cond){return(c(NA,NA))})
+  
+}))
+print(Sys.time()-strt)
+rownames(drivers_imm_de2) <- rownames(driver_cnvs2)
+drivers_imm_de2 <- drivers_imm_de2[!is.na(drivers_imm_de2[,1]) & !is.infinite(drivers_imm_de2[,1]),]
+```
+
+```{r}
+test_dd <- read_delim("/Users/sushantpa/TARGET/7b1979f8-f65d-44a9-80ee-e8098bc5404e/TARGET-OS.2519b562-f63d-599c-a4b0-b9bcd65e201e.gene_level_copy_number.v36.tsv", delim = "\t")
+```
+
+```{r}
+canine_io <- read_excel("~/Dog/LBL-10806-01_Canine_IO_w.Overlaps and Signature details_May 11, 2021 (1).xlsx", sheet = "Functional Annotations", skip = 1)
+canine_io2 <- read_excel("~/Dog/LBL-10806-01_Canine_IO_w.Overlaps and Signature details_May 11, 2021 (1).xlsx", sheet = "Themes", skip = 1)
+gene_sets <- lapply(5:ncol(canine_io), function(i) {
+  return(canine_io$`Human Gene`[canine_io[[i]] == "+" & !is.na(canine_io[[i]])])
+})
+names(gene_sets) <- colnames(canine_io)[5:ncol(canine_io)]
+for(ct in names(table(canine_io$`Cell Type`))){
+  gene_sets[[ct]] <-canine_io$`Human Gene`[canine_io$`Cell Type` == ct & !is.na(canine_io$`Cell Type`)]
+}
+gene_sets$stroma <- union(gene_sets$Angiogenesis, gene_sets$`Matrix Remodeling And Metastasis`)
+
+```
+

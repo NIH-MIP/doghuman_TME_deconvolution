@@ -101,7 +101,7 @@ CE <- combined_expr[,common]
 NaAn <- nanostring_annotations[common,]
 ```
 
-#Read COTC021/22 bulk rnaseq data
+# Read COTC021/22 bulk RNA Seq data
 
 ``` r
 library(readr)

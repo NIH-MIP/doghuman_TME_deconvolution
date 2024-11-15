@@ -299,7 +299,7 @@ print(p2)
 #ggsave(plot = p2, filename = "~/Dog/CYT_caines.pdf", width = 4, height = 4)
 ```
 
-# Assessing reproducibility of TME clusters via MCP counter analysis using recent canine single cell RNA seq cell type signatures
+# Assessing reproducibility of TME clusters via MCP counter analysis using canine single cell RNA seq cell type signatures (Ammons et al, Communications Biology, 2024)
 
 ``` r
 library(ConsensusClusterPlus)

@@ -185,7 +185,7 @@ cGAS_STING_signature <- function(expr){
 }
 ```
 
-#run MCP counter + clustering analysis on bulk rnaseq data
+# run MCP counter + clustering analysis on bulk rnaseq data
 
 ``` r
 library(RColorBrewer)
@@ -299,8 +299,7 @@ print(p2)
 #ggsave(plot = p2, filename = "~/Dog/CYT_caines.pdf", width = 4, height = 4)
 ```
 
-#Assessing reproducibility of TME clusters via MCP counter analysis
-using recent canine single cell RNA seq cell type markers
+# Assessing reproducibility of TME clusters via MCP counter analysis using recent canine single cell RNA seq cell type signatures
 
 ``` r
 library(ConsensusClusterPlus)
@@ -638,8 +637,7 @@ print(fig3)
 #ggsave(plot = fig3, filename = "~/Dog/Final_IHC_validation_figure_panels.pdf", width = 6, height = 6)
 ```
 
-#Plotting distribution of immune checkpoint gene expression across TME
-clusters
+# Plotting distribution of immune checkpoint gene expression across TME clusters
 
 ``` r
 library(reshape)
@@ -674,7 +672,7 @@ print(p1)
 #ggsave(plot = p1, filename = "~/Dog/canine_immune_checkpoints.pdf")
 ```
 
-#Assessing reproducibility of TME clusters via xCell analysis
+# Assessing reproducibility of TME clusters via xCell analysis
 
 ``` r
 library(xCell)
@@ -739,7 +737,7 @@ Heatmap(apply(out,2,scale), row_split = as.character(res[[3]]$consensusClass), c
 #dev.off()
 ```
 
-#run MCP counter + clustering analysis on bulk nanostring data
+# run MCP counter + clustering analysis on bulk nanostring data
 
 ``` r
 set.seed(24524)
@@ -877,8 +875,7 @@ print(p1)
 #ggsave(plot = p1, filename = "~/Dog/canine_immune_checkpoints_nano.pdf")
 ```
 
-#Joint analysis of primary and metastatic tumor samples from dogs
-enolled in COTC021/22
+# Joint analysis of primary and metastatic tumor samples from dogs enolled in COTC021/22
 
 ``` r
 library(tibble)
@@ -1183,7 +1180,7 @@ print(fig)
 #save_image(fig, file = "/Users/sushantpa/Dog/met_evolve_kaleido.pdf",width = 410, height = 720)
 ```
 
-#Read clinical outcome data
+# Read clinical outcome data
 
 ``` r
 library(survival)
@@ -1302,7 +1299,7 @@ print(p1)
 #ggsave(filename = "~/Dog/canine_DFS_survfigure.pdf", plot=p1$plot, width = 9, height = 6)
 ```
 
-#Cox proportional hazards analysis
+# Multivaruate Cox proportional hazards analysis to account for confounding clinical factors
 
 ``` r
 cph_dat <- data.frame(time = cc1$DFS_time,
@@ -1519,7 +1516,7 @@ library(clusterProfiler)
     ##     filter
 
 ``` r
-#Read raw counts
+# Read raw counts
 DOG2_Raw_RNA_SEQ_DATA <- read_csv("~/Dog/DOG2_Raw_RNA_SEQ_DATA.csv")
 ```
 
@@ -1532,13 +1529,11 @@ DOG2_Raw_RNA_SEQ_DATA <- read_csv("~/Dog/DOG2_Raw_RNA_SEQ_DATA.csv")
     ## ℹ Use `spec()` to retrieve the full column specification for this data.
     ## ℹ Specify the column types or set `show_col_types = FALSE` to quiet this message.
 
+## IE
 ``` r
 genes <- DOG2_Raw_RNA_SEQ_DATA$gene_id
 genes <- sapply(genes, function(x) strsplit(x, split = "_")[[1]][1])
 DOG2_Raw_RNA_SEQ_DATA$gene_id <- NULL
-
-
-#IE
 groups = ii1[colnames(DOG2_Raw_RNA_SEQ_DATA)]
 groups = c("rest","IE")[as.numeric(groups == "IE")+1]
 counts.DGEList <- DGEList(counts = DOG2_Raw_RNA_SEQ_DATA, genes = genes, group = as.factor(groups))
@@ -1585,9 +1580,8 @@ print(p1)
 ```
 
 ![](comparative_deconv_analysis_files/figure-markdown_github/unnamed-chunk-16-1.png)
-
+## IE-ECM
 ``` r
-#IE-ECM
 groups = ii1[colnames(DOG2_Raw_RNA_SEQ_DATA)]
 groups = c("rest","IE-ECM")[as.numeric(groups == "IE-ECM")+1]
 counts.DGEList <- DGEList(counts = DOG2_Raw_RNA_SEQ_DATA, genes = genes, group = as.factor(groups))
@@ -1646,9 +1640,9 @@ print(p1)
 ``` r
 #ggsave(plot = p1, filename = "~/Dog/IEECM_enrichmentplot.pdf")
 ```
-
+## ID
 ``` r
-#ID
+
 groups = ii1[colnames(DOG2_Raw_RNA_SEQ_DATA)]
 groups = c("rest","ID")[as.numeric(groups == "ID")+1]
 counts.DGEList <- DGEList(counts = DOG2_Raw_RNA_SEQ_DATA, genes = genes, group = as.factor(groups))
@@ -1711,7 +1705,7 @@ print(p1)
 #ggsave(plot = p1, filename = "~/Dog/ID_enrichmentplot.pdf")
 ```
 
-#Generate combined dotplot depicting differential expression + gsea
+# Generate combined dotplot depicting differential expression + gsea
 results
 
 ``` r
@@ -1777,9 +1771,9 @@ draw( hp, annotation_legend_list = lgd_list)
 
 ![](comparative_deconv_analysis_files/figure-markdown_github/unnamed-chunk-19-1.png)
 
-#Read human data
+# Read human data
 
-#TARGET
+# TARGET
 
 ``` r
 library("org.Hs.eg.db") 
@@ -2168,7 +2162,7 @@ print(p1)
 
 ![](comparative_deconv_analysis_files/figure-markdown_github/unnamed-chunk-21-3.png)
 
-#GSE39055
+# GSE39055
 
 ``` r
 expr_human3 <- read_csv("~/Dog/GSE39055_expr.csv")
@@ -2258,7 +2252,7 @@ print(p1)
 
 ![](comparative_deconv_analysis_files/figure-markdown_github/unnamed-chunk-22-2.png)
 
-#GSE16091
+# GSE16091
 
 ``` r
 expr_human5 <- read_csv("~/Dog/GSE16091_expr.csv")
@@ -2558,7 +2552,7 @@ colnames(cellprop_human_scOS) <- newcolnames
 sc_sample_type <- c("Primary","Primary","Primary","Primary","Met","Recurrent","Primary","Primary","Met","Recurrent","Primary")
 ```
 
-#Build a TME subtype classifier to classify TME of new (human) tumor
+# Build a TME subtype classifier to classify TME of new (human) tumor
 samples
 
 ``` r

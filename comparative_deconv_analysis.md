@@ -2664,7 +2664,7 @@ Heatmap(cellprop_human_scOS, row_split = sc_merged_subtypes, cluster_columns = F
 names(sc_merged_subtypes) <- colnames(bulk_exp_scOS)
 ```
 
-# Merged all human datasets
+# Merge all human datasets
 
 ``` r
 ds <- c(rep("TARGET", length(imm_clus_target)), rep("GSE21257", length(imm_clus2)), rep("GSE39055", length(imm_clus3)), rep("GSE33383",length(imm_clus4)), rep("GSE16091",length(imm_clus5)), rep("GSE30699",length(imm_clus6)), rep("GSE32981", length(imm_clus7)))
@@ -3016,8 +3016,7 @@ print(p2)
 #ggsave(plot = p2, filename = "~/Dog/human_cph_results_cyt.pdf", width = 5, height = 6)
 ```
 
-#plot distribution of mcp counter scores for both canine and human
-samples
+# plot distribution of mcp counter scores for both canine and human samples
 
 ``` r
 dd_rnaseq <- data.frame(cellprop_rnaseq[,c(1:10)], subtype = imm_clus)
